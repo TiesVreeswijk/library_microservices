@@ -1,0 +1,11 @@
+# .NET build output
+bin/
+obj/
+
+# IDE files
+.idea/
+.vs/
+*.user
+
+# Local secrets (copy .env.example to .env)
+.env

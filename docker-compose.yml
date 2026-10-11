@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Read by db/init/01-create-databases.sh
+      BOOK_DB_PASSWORD: ${BOOK_DB_PASSWORD:-book_password}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # -h localhost forces a TCP check, which only succeeds after the init scripts are done.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  book-service:
+    build: ./services/BookService
+    environment:
+      ConnectionStrings__BookDb: Host=postgres;Port=5432;Database=book_db;Username=book_user;Password=${BOOK_DB_PASSWORD:-book_password};GSS Encryption Mode=Disable
+    ports:
+      - "5001:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

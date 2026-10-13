@@ -122,3 +122,23 @@ Example: Member Service.
    ```
 5. Run `docker compose down -v` so the init script runs again, then
    `docker compose up --build`.
+
+## Branching strategy
+
+```
+main        stable, only receives merges from develop (CI/CD will build from here)
+ └ develop  integration branch: features are merged and tested together here
+    └ feature/<short-name>   one branch per feature, branched from develop
+```
+
+1. Start a feature from the latest `develop`:
+   ```bash
+   git switch develop
+   git pull
+   git switch -c feature/member-service
+   ```
+2. Commit on the feature branch, push it, and open a pull request into `develop`.
+3. After merging, run everything together on `develop` (`docker compose up --build`).
+4. When `develop` is stable, open a pull request from `develop` into `main`.
+
+Never commit directly to `main`.

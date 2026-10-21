@@ -12,6 +12,10 @@ var connectionString = builder.Configuration.GetConnectionString("BookDb")
 builder.Services.AddDbContext<BookDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services.AddOpenApi();
 
+// Health Check API: /health reports Unhealthy (503) when the database cannot be reached,
+// so Docker and later the gateway can tell "running" apart from "working".
+builder.Services.AddHealthChecks().AddDbContextCheck<BookDbContext>("database");
+
 var app = builder.Build();
 
 // Create/update the database schema and insert seed data on startup.
@@ -26,6 +30,8 @@ using (var scope = app.Services.CreateScope())
 // Turned on in every environment so it can be demoed from Docker; a real production app would usually hide it.
 app.MapOpenApi();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "Book Service"));
+
+app.MapHealthChecks("/health");
 
 var books = app.MapGroup("/books").WithTags("Books");
 

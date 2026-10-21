@@ -47,6 +47,10 @@ The raw API description is at http://localhost:5001/openapi/v1.json.
 | POST   | /books        | 201     | 400, 409 |
 | PUT    | /books/{id}   | 200     | 400, 404, 409 |
 | DELETE | /books/{id}   | 204     | 404      |
+| GET    | /health       | 200     | 503      |
+
+`/health` returns `Healthy` when the service can reach its database and
+`Unhealthy` (503) when it cannot.
 
 409 means another book already has that ISBN. ISBNs must be 10 or 13 digits;
 hyphens are allowed and are removed before saving.

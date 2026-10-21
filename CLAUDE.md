@@ -44,7 +44,7 @@ the results in memory.
 ## Current state
 
 Book Service only — .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
-startup, seeded with 5 books, Swagger on http://localhost:5001/swagger. Postgres
+startup, seeded with 5 books, `/health` endpoint with a database check, Swagger on http://localhost:5001/swagger. Postgres
 runs in Docker with one database and user per service. No Loan Service, Member
 Service or gateway yet.
 

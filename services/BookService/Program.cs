@@ -103,6 +103,40 @@ books.MapDelete("/{id:int}", async Task<Results<NoContent, NotFound>> (int id, B
     return TypedResults.NoContent();
 });
 
+// Called by the Loan Service when a book is borrowed or returned.
+// The check and the change happen in one SQL UPDATE ... WHERE, so two loans at the
+// same moment can never both take the last copy (no read-then-write race).
+
+books.MapPost("/{id:int}/checkout", async Task<Results<Ok<Book>, NotFound, Conflict<ErrorResponse>>> (int id, BookDbContext db) =>
+{
+    var updated = await db.Books
+        .Where(b => b.Id == id && b.AvailableCopies > 0)
+        .ExecuteUpdateAsync(s => s.SetProperty(b => b.AvailableCopies, b => b.AvailableCopies - 1));
+
+    var book = await db.Books.FindAsync(id);
+    if (book is null)
+        return TypedResults.NotFound();
+
+    return updated == 1
+        ? TypedResults.Ok(book)
+        : TypedResults.Conflict(new ErrorResponse($"No copies of book {id} are available."));
+});
+
+books.MapPost("/{id:int}/return", async Task<Results<Ok<Book>, NotFound, Conflict<ErrorResponse>>> (int id, BookDbContext db) =>
+{
+    var updated = await db.Books
+        .Where(b => b.Id == id && b.AvailableCopies < b.TotalCopies)
+        .ExecuteUpdateAsync(s => s.SetProperty(b => b.AvailableCopies, b => b.AvailableCopies + 1));
+
+    var book = await db.Books.FindAsync(id);
+    if (book is null)
+        return TypedResults.NotFound();
+
+    return updated == 1
+        ? TypedResults.Ok(book)
+        : TypedResults.Conflict(new ErrorResponse($"All copies of book {id} are already in."));
+});
+
 app.Run();
 
 // The unique index on Isbn makes Postgres reject duplicates with error code 23505.

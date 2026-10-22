@@ -50,7 +50,14 @@ The raw API description is at http://localhost:5001/openapi/v1.json.
 | POST   | /books        | 201     | 400, 409 |
 | PUT    | /books/{id}   | 200     | 400, 404, 409 |
 | DELETE | /books/{id}   | 204     | 404      |
+| POST   | /books/{id}/checkout | 200 | 404, 409 |
+| POST   | /books/{id}/return   | 200 | 404, 409 |
 | GET    | /health       | 200     | 503      |
+
+`checkout` lowers `availableCopies` by 1 and `return` raises it by 1; they are
+called by the Loan Service. 409 means no copy is available (checkout) or all
+copies are already in (return). The check and the change are one SQL `UPDATE`,
+so two checkouts at the same moment can never both take the last copy.
 
 `/health` returns `Healthy` when the service can reach its database and
 `Unhealthy` (503) when it cannot.

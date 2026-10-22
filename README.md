@@ -1,11 +1,12 @@
 # Library microservices
 
-A library lending system built as microservices. Right now it has two services
-(Book Service and Member Service) and one Postgres container. Every service gets its own database.
+A library lending system built as microservices. It has three services
+(Book, Member and Loan Service) and one Postgres container. Every service gets its own database.
 
 ```
 services/BookService   Book Service (.NET 10, Minimal APIs, EF Core + Npgsql)
 services/MemberService Member Service (same setup, its own database)
+services/LoanService   Loan Service (calls the other two over HTTP)
 db/init                Postgres init script that creates one database + user per service
 docs                   Project documentation
 docker-compose.yml     Starts Postgres and all services
@@ -20,9 +21,10 @@ You only need Docker.
 docker compose up --build
 ```
 
-The Book Service runs on http://localhost:5001 and the Member Service on
-http://localhost:5002. On startup each service applies its EF Core migrations
-and adds seed data if its table is empty (5 books, 3 members).
+The Book Service runs on http://localhost:5001, the Member Service on
+http://localhost:5002 and the Loan Service on http://localhost:5003. On startup
+each service applies its EF Core migrations. Books and members get seed data
+if their table is empty (5 books, 3 members); loans start empty.
 
 Passwords: without a `.env` file, Compose uses the defaults from `.env.example`.
 To change them, `cp .env.example .env` and edit `.env`.
@@ -36,8 +38,8 @@ docker compose down -v
 
 ## Try it in the browser
 
-Open http://localhost:5001/swagger (books) or http://localhost:5002/swagger
-(members). Click an endpoint, then **Try it out** and
+Open http://localhost:5001/swagger (books), http://localhost:5002/swagger
+(members) or http://localhost:5003/swagger (loans). Click an endpoint, then **Try it out** and
 **Execute** to send a real request and see the response and status code.
 The raw API description is at http://localhost:5001/openapi/v1.json.
 
@@ -103,6 +105,41 @@ curl localhost:5002/members
 curl -X POST localhost:5002/members   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":false}'
 
 curl -X PUT localhost:5002/members/4   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":true}'
+```
+
+## Loan Service endpoints
+
+| Method | Path               | Success | Errors             |
+|--------|--------------------|---------|--------------------|
+| GET    | /loans             | 200     |                    |
+| GET    | /loans?memberId=1  | 200     |                    |
+| GET    | /loans/{id}        | 200     | 404                |
+| POST   | /loans             | 201     | 400, 409, 503      |
+| POST   | /loans/{id}/return | 200     | 404, 409, 503      |
+| GET    | /health            | 200     | 503                |
+
+`POST /loans` takes `{"memberId": 1, "bookId": 2}` and does three steps:
+
+1. Ask the Member Service for the member: 400 if it does not exist, 409 if
+   the member is blocked.
+2. Ask the Book Service to check out one copy: 400 if the book does not
+   exist, 409 if no copy is available.
+3. Save the loan, due in 14 days. If saving fails, the copy is given back.
+
+503 means the Member or Book Service could not be reached within 5 seconds.
+The Loan Service keeps working for everything that only needs its own
+database, such as listing loans. A loan only stores `memberId` and `bookId`,
+not titles or names: those belong to the other services.
+
+The addresses of the other services come from `Services__MemberService` and
+`Services__BookService` (see `docker-compose.yml`).
+
+```bash
+curl -X POST localhost:5003/loans   -H "Content-Type: application/json"   -d '{"memberId":1,"bookId":2}'
+
+curl "localhost:5003/loans?memberId=1"
+
+curl -X POST localhost:5003/loans/1/return
 ```
 
 ## Add an EF Core migration

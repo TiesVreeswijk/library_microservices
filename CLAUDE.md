@@ -43,10 +43,15 @@ the results in memory.
 
 ## Current state
 
-Book Service (port 5001) and Member Service (port 5002), both .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
-startup, seed data (5 books, 3 members of which one is blocked), `/health`
+Book Service (port 5001), Member Service (port 5002) and Loan Service (port 5003), all .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
+startup, seed data (5 books, 3 members of which one is blocked; no loans), `/health`
 endpoint with a database check, Swagger on `/swagger`. Postgres runs in Docker
-with one database and user per service. No Loan Service or gateway yet.
+with one database and user per service. No gateway yet.
+
+The Loan Service calls the Member Service (is the member blocked?) and the Book
+Service (`POST /books/{id}/checkout` and `/return`, atomic `UPDATE ... WHERE`) over
+HTTP with a 5 second timeout, and returns 503 when one of them is unreachable. It
+gives the copy back if saving the loan fails; anything more is Saga territory (out of scope).
 
 ## Conventions
 

@@ -28,5 +28,4 @@ EOSQL
 
 create_db book_db   book_user   "$BOOK_DB_PASSWORD"
 create_db member_db member_user "$MEMBER_DB_PASSWORD"
-# Later:
-# create_db loan_db   loan_user   "$LOAN_DB_PASSWORD"
+create_db loan_db   loan_user   "$LOAN_DB_PASSWORD"

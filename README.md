@@ -1,10 +1,11 @@
 # Library microservices
 
-A library lending system built as microservices. Right now it has one service
-(Book Service) and one Postgres container. Every service gets its own database.
+A library lending system built as microservices. Right now it has two services
+(Book Service and Member Service) and one Postgres container. Every service gets its own database.
 
 ```
 services/BookService   Book Service (.NET 10, Minimal APIs, EF Core + Npgsql)
+services/MemberService Member Service (same setup, its own database)
 db/init                Postgres init script that creates one database + user per service
 docs                   Project documentation
 docker-compose.yml     Starts Postgres and all services
@@ -19,8 +20,9 @@ You only need Docker.
 docker compose up --build
 ```
 
-The Book Service runs on http://localhost:5001. On startup it applies EF Core
-migrations and adds 5 books if the table is empty.
+The Book Service runs on http://localhost:5001 and the Member Service on
+http://localhost:5002. On startup each service applies its EF Core migrations
+and adds seed data if its table is empty (5 books, 3 members).
 
 Passwords: without a `.env` file, Compose uses the defaults from `.env.example`.
 To change them, `cp .env.example .env` and edit `.env`.
@@ -34,7 +36,8 @@ docker compose down -v
 
 ## Try it in the browser
 
-Open http://localhost:5001/swagger. Click an endpoint, then **Try it out** and
+Open http://localhost:5001/swagger (books) or http://localhost:5002/swagger
+(members). Click an endpoint, then **Try it out** and
 **Execute** to send a real request and see the response and status code.
 The raw API description is at http://localhost:5001/openapi/v1.json.
 
@@ -73,12 +76,35 @@ curl -X DELETE localhost:5001/books/1
 
 (On Windows PowerShell, use `curl.exe` instead of `curl`.)
 
+## Member Service endpoints
+
+| Method | Path          | Success | Errors        |
+|--------|---------------|---------|---------------|
+| GET    | /members      | 200     |               |
+| GET    | /members/{id} | 200     | 404           |
+| POST   | /members      | 201     | 400, 409      |
+| PUT    | /members/{id} | 200     | 400, 404, 409 |
+| GET    | /health       | 200     | 503           |
+
+409 means another member already has that card number. Card numbers are
+stored without spaces and in capitals, so `lib 0004` becomes `LIB0004`.
+Member 3 (Carla Bakker) is seeded as blocked, for the Loan Service later.
+
+```bash
+curl localhost:5002/members
+
+curl -X POST localhost:5002/members   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":false}'
+
+curl -X PUT localhost:5002/members/4   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":true}'
+```
+
 ## Add an EF Core migration
 
 Needs the .NET 10 SDK and the EF tool (`dotnet tool install --global dotnet-ef`).
 
-1. Change `Book.cs` or `BookDbContext.cs`.
-2. From `services/BookService`, run:
+1. Change the model, e.g. `Book.cs` or `BookDbContext.cs`.
+2. From the service folder (here `services/BookService`; for the Member Service
+   use `ConnectionStrings__MemberDb`), run:
 
    ```bash
    # bash
@@ -96,7 +122,7 @@ Needs the .NET 10 SDK and the EF tool (`dotnet tool install --global dotnet-ef`)
 
 ## How to add the next service
 
-Example: Member Service.
+Example: Member Service (this is how it was added).
 
 1. Copy `services/BookService` to `services/MemberService`. Rename the
    `.csproj`, the namespace, the DbContext and the `BookService.dll` line in

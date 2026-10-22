@@ -43,10 +43,10 @@ the results in memory.
 
 ## Current state
 
-Book Service only — .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
-startup, seeded with 5 books, `/health` endpoint with a database check, Swagger on http://localhost:5001/swagger. Postgres
-runs in Docker with one database and user per service. No Loan Service, Member
-Service or gateway yet.
+Book Service (port 5001) and Member Service (port 5002), both .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
+startup, seed data (5 books, 3 members of which one is blocked), `/health`
+endpoint with a database check, Swagger on `/swagger`. Postgres runs in Docker
+with one database and user per service. No Loan Service or gateway yet.
 
 ## Conventions
 

@@ -22,8 +22,6 @@ services:
     build: ./services/BookService
     environment:
       ConnectionStrings__BookDb: Host=postgres;Port=5432;Database=book_db;Username=book_user;Password=${BOOK_DB_PASSWORD:-book_password};GSS Encryption Mode=Disable
-    ports:
-      - "5001:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,8 +30,6 @@ services:
     build: ./services/MemberService
     environment:
       ConnectionStrings__MemberDb: Host=postgres;Port=5432;Database=member_db;Username=member_user;Password=${MEMBER_DB_PASSWORD:-member_password};GSS Encryption Mode=Disable
-    ports:
-      - "5002:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,14 +41,14 @@ services:
       # Inside the Docker network a service is reached by its name and its internal port 8080.
       Services__MemberService: http://member-service:8080
       Services__BookService: http://book-service:8080
-    ports:
-      - "5003:8080"
     # Only the database is needed to start. The Loan Service deliberately does not wait for
     # the Book and Member Services: it calls them per request and returns 503 when they are down.
     depends_on:
       postgres:
         condition: service_healthy
 
+  # The only service with a port on your machine: clients reach everything through the gateway.
+  # The other services are only reachable inside the Docker network (see docker-compose.debug.yml).
   api-gateway:
     build: ./services/ApiGateway
     environment:

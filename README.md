@@ -1,16 +1,19 @@
 # Library microservices
 
-A library lending system built as microservices. It has three services
-(Book, Member and Loan Service) and one Postgres container. Every service gets its own database.
+A library lending system built as microservices. It has an API Gateway, three
+services (Book, Member and Loan Service) and one Postgres container. Every
+service gets its own database, and clients only talk to the gateway.
 
 ```
+services/ApiGateway    API Gateway (the only entry point, port 5000)
 services/BookService   Book Service (.NET 10, Minimal APIs, EF Core + Npgsql)
 services/MemberService Member Service (same setup, its own database)
 services/LoanService   Loan Service (calls the other two over HTTP)
 db/init                Postgres init script that creates one database + user per service
 docs                   Project documentation
 docker-compose.yml     Starts Postgres and all services
-.env.example           Passwords; copy to .env to change them
+docker-compose.debug.yml  Opens the service ports for debugging
+.env.example           Passwords and the API key; copy to .env to change them
 ```
 
 ## Start it
@@ -21,9 +24,9 @@ You only need Docker.
 docker compose up --build
 ```
 
-The Book Service runs on http://localhost:5001, the Member Service on
-http://localhost:5002 and the Loan Service on http://localhost:5003. On startup
-each service applies its EF Core migrations. Books and members get seed data
+Everything is reached through the gateway on http://localhost:5000. The
+services themselves have no port on your machine; they are only reachable
+inside the Docker network. On startup each service applies its EF Core migrations. Books and members get seed data
 if their table is empty (5 books, 3 members); loans start empty.
 
 Passwords: without a `.env` file, Compose uses the defaults from `.env.example`.
@@ -36,12 +39,44 @@ The init script only runs when the Postgres volume is empty. After changing it
 docker compose down -v
 ```
 
-## Try it in the browser
+## API Gateway
 
-Open http://localhost:5001/swagger (books), http://localhost:5002/swagger
-(members) or http://localhost:5003/swagger (loans). Click an endpoint, then **Try it out** and
-**Execute** to send a real request and see the response and status code.
-The raw API description is at http://localhost:5001/openapi/v1.json.
+Every request under `/api` needs the header `X-Api-Key` (default `dev-api-key`,
+set with `GATEWAY_API_KEY`); without it the gateway answers 401. The gateway
+removes `/api` and forwards the request to the service that owns the resource:
+
+| Gateway (port 5000)  | Forwarded to                |
+|----------------------|-----------------------------|
+| `/api/books/...`     | Book Service `/books/...`   |
+| `/api/members/...`   | Member Service `/members/...` |
+| `/api/loans/...`     | Loan Service `/loans/...`   |
+| `/health`            | the gateway itself, no key needed |
+
+`/api/books/{id}/checkout` and `/return` give 404: only the Loan Service may
+call them, so clients borrow through `POST /api/loans`. If a service cannot be
+reached, the gateway answers 503.
+
+```bash
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/books
+```
+
+(On Windows PowerShell, use `curl.exe` instead of `curl`.)
+
+The endpoint tables below list each service's own paths; through the gateway
+they start with `/api`.
+
+## Debugging a single service
+
+To use a service's own Swagger page, start with the debug file, which opens
+the service ports again:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up --build
+```
+
+Then open http://localhost:5001/swagger (books), http://localhost:5002/swagger
+(members) or http://localhost:5003/swagger (loans). Click an endpoint, then
+**Try it out** and **Execute**. Without the debug file these ports are closed.
 
 ## Book Service endpoints
 
@@ -57,7 +92,7 @@ The raw API description is at http://localhost:5001/openapi/v1.json.
 | GET    | /health       | 200     | 503      |
 
 `checkout` lowers `availableCopies` by 1 and `return` raises it by 1; they are
-called by the Loan Service. 409 means no copy is available (checkout) or all
+called by the Loan Service and not reachable through the gateway. 409 means no copy is available (checkout) or all
 copies are already in (return). The check and the change are one SQL `UPDATE`,
 so two checkouts at the same moment can never both take the last copy.
 
@@ -68,22 +103,14 @@ so two checkouts at the same moment can never both take the last copy.
 hyphens are allowed and are removed before saving.
 
 ```bash
-curl localhost:5001/books
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/books/1
 
-curl localhost:5001/books/1
-
-curl -X POST localhost:5001/books \
-  -H "Content-Type: application/json" \
+curl -X POST localhost:5000/api/books \
+  -H "X-Api-Key: dev-api-key" -H "Content-Type: application/json" \
   -d '{"title":"Refactoring","author":"Martin Fowler","isbn":"978-0-13-475759-9","totalCopies":2,"availableCopies":2}'
 
-curl -X PUT localhost:5001/books/1 \
-  -H "Content-Type: application/json" \
-  -d '{"title":"The Pragmatic Programmer","author":"David Thomas, Andrew Hunt","isbn":"9780135957059","totalCopies":5,"availableCopies":4}'
-
-curl -X DELETE localhost:5001/books/1
+curl -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/books/6
 ```
-
-(On Windows PowerShell, use `curl.exe` instead of `curl`.)
 
 ## Member Service endpoints
 
@@ -100,11 +127,11 @@ stored without spaces and in capitals, so `lib 0004` becomes `LIB0004`.
 Member 3 (Carla Bakker) is seeded as blocked, for the Loan Service later.
 
 ```bash
-curl localhost:5002/members
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members
 
-curl -X POST localhost:5002/members   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":false}'
-
-curl -X PUT localhost:5002/members/4   -H "Content-Type: application/json"   -d '{"name":"Daan Visser","cardNumber":"LIB0004","isBlocked":true}'
+curl -X PUT localhost:5000/api/members/2 \
+  -H "X-Api-Key: dev-api-key" -H "Content-Type: application/json" \
+  -d '{"name":"Bram Jansen","cardNumber":"LIB0002","isBlocked":true}'
 ```
 
 ## Loan Service endpoints
@@ -135,11 +162,13 @@ The addresses of the other services come from `Services__MemberService` and
 `Services__BookService` (see `docker-compose.yml`).
 
 ```bash
-curl -X POST localhost:5003/loans   -H "Content-Type: application/json"   -d '{"memberId":1,"bookId":2}'
+curl -X POST localhost:5000/api/loans \
+  -H "X-Api-Key: dev-api-key" -H "Content-Type: application/json" \
+  -d '{"memberId":1,"bookId":2}'
 
-curl "localhost:5003/loans?memberId=1"
+curl -H "X-Api-Key: dev-api-key" "localhost:5000/api/loans?memberId=1"
 
-curl -X POST localhost:5003/loans/1/return
+curl -X POST -H "X-Api-Key: dev-api-key" localhost:5000/api/loans/1/return
 ```
 
 ## Add an EF Core migration
@@ -188,13 +217,17 @@ Example: Member Service (this is how it was added).
      build: ./services/MemberService
      environment:
        ConnectionStrings__MemberDb: Host=postgres;Port=5432;Database=member_db;Username=member_user;Password=${MEMBER_DB_PASSWORD:-member_password};GSS Encryption Mode=Disable
-     ports:
-       - "5002:8080"
      depends_on:
        postgres:
          condition: service_healthy
    ```
-5. Run `docker compose down -v` so the init script runs again, then
+   No `ports:` here: only the gateway is reachable from outside. Add the
+   port to `docker-compose.debug.yml` instead (`"5002:8080"`).
+5. Make it reachable through the gateway: add
+   `Services__MemberService: http://member-service:8080` to the `api-gateway`
+   environment in `docker-compose.yml` and `MapRoute("/api/members", "MemberService");`
+   plus `"MemberService"` in the list of HttpClients in `services/ApiGateway/Program.cs`.
+6. Run `docker compose down -v` so the init script runs again, then
    `docker compose up --build`.
 
 ## Branching strategy

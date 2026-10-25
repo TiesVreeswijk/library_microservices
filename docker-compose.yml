@@ -55,6 +55,7 @@ services:
       Services__BookService: http://book-service:8080
       Services__MemberService: http://member-service:8080
       Services__LoanService: http://loan-service:8080
+      Gateway__ApiKey: ${GATEWAY_API_KEY:-dev-api-key}
     ports:
       - "5000:8080"
 

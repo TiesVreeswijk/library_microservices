@@ -19,12 +19,31 @@ foreach (var name in new[] { "BookService", "MemberService", "LoanService" })
     });
 }
 
+// The key clients must send in the X-Api-Key header, from the environment variable Gateway__ApiKey.
+var apiKey = builder.Configuration["Gateway:ApiKey"]
+    ?? throw new InvalidOperationException("Set the environment variable Gateway__ApiKey.");
+
 // The gateway has no database, so its health check only says "the gateway process is up".
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
 app.MapHealthChecks("/health");
+
+// Authentication happens here, once, for every service. The services themselves do not check
+// anything: they trust whatever reaches them inside the Docker network.
+// /health stays open so Docker and monitoring can call it without a key.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api") && !ApiKey.IsValid(context.Request.Headers["X-Api-Key"], apiKey))
+    {
+        await Results.Problem("Send a valid API key in the X-Api-Key header.",
+            statusCode: StatusCodes.Status401Unauthorized).ExecuteAsync(context);
+        return;
+    }
+
+    await next();
+});
 
 // Routing: /api/<resource>/... goes to the service that owns <resource>, without the /api prefix.
 //   /api/books/1          -> book-service   /books/1

@@ -12,6 +12,10 @@ var connectionString = builder.Configuration.GetConnectionString("BookDb")
 builder.Services.AddDbContext<BookDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services.AddOpenApi();
 
+// Health Check API: /health reports Unhealthy (503) when the database cannot be reached,
+// so Docker and later the gateway can tell "running" apart from "working".
+builder.Services.AddHealthChecks().AddDbContextCheck<BookDbContext>("database");
+
 var app = builder.Build();
 
 // Create/update the database schema and insert seed data on startup.
@@ -26,6 +30,8 @@ using (var scope = app.Services.CreateScope())
 // Turned on in every environment so it can be demoed from Docker; a real production app would usually hide it.
 app.MapOpenApi();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "Book Service"));
+
+app.MapHealthChecks("/health");
 
 var books = app.MapGroup("/books").WithTags("Books");
 
@@ -95,6 +101,40 @@ books.MapDelete("/{id:int}", async Task<Results<NoContent, NotFound>> (int id, B
     db.Books.Remove(book);
     await db.SaveChangesAsync();
     return TypedResults.NoContent();
+});
+
+// Called by the Loan Service when a book is borrowed or returned.
+// The check and the change happen in one SQL UPDATE ... WHERE, so two loans at the
+// same moment can never both take the last copy (no read-then-write race).
+
+books.MapPost("/{id:int}/checkout", async Task<Results<Ok<Book>, NotFound, Conflict<ErrorResponse>>> (int id, BookDbContext db) =>
+{
+    var updated = await db.Books
+        .Where(b => b.Id == id && b.AvailableCopies > 0)
+        .ExecuteUpdateAsync(s => s.SetProperty(b => b.AvailableCopies, b => b.AvailableCopies - 1));
+
+    var book = await db.Books.FindAsync(id);
+    if (book is null)
+        return TypedResults.NotFound();
+
+    return updated == 1
+        ? TypedResults.Ok(book)
+        : TypedResults.Conflict(new ErrorResponse($"No copies of book {id} are available."));
+});
+
+books.MapPost("/{id:int}/return", async Task<Results<Ok<Book>, NotFound, Conflict<ErrorResponse>>> (int id, BookDbContext db) =>
+{
+    var updated = await db.Books
+        .Where(b => b.Id == id && b.AvailableCopies < b.TotalCopies)
+        .ExecuteUpdateAsync(s => s.SetProperty(b => b.AvailableCopies, b => b.AvailableCopies + 1));
+
+    var book = await db.Books.FindAsync(id);
+    if (book is null)
+        return TypedResults.NotFound();
+
+    return updated == 1
+        ? TypedResults.Ok(book)
+        : TypedResults.Conflict(new ErrorResponse($"All copies of book {id} are already in."));
 });
 
 app.Run();

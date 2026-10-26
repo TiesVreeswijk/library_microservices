@@ -6,6 +6,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       # Read by db/init/01-create-databases.sh
       BOOK_DB_PASSWORD: ${BOOK_DB_PASSWORD:-book_password}
+      MEMBER_DB_PASSWORD: ${MEMBER_DB_PASSWORD:-member_password}
+      LOAN_DB_PASSWORD: ${LOAN_DB_PASSWORD:-loan_password}
     volumes:
       - ./db/init:/docker-entrypoint-initdb.d:ro
       - postgres-data:/var/lib/postgresql
@@ -20,11 +22,42 @@ services:
     build: ./services/BookService
     environment:
       ConnectionStrings__BookDb: Host=postgres;Port=5432;Database=book_db;Username=book_user;Password=${BOOK_DB_PASSWORD:-book_password};GSS Encryption Mode=Disable
-    ports:
-      - "5001:8080"
     depends_on:
       postgres:
         condition: service_healthy
+
+  member-service:
+    build: ./services/MemberService
+    environment:
+      ConnectionStrings__MemberDb: Host=postgres;Port=5432;Database=member_db;Username=member_user;Password=${MEMBER_DB_PASSWORD:-member_password};GSS Encryption Mode=Disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  loan-service:
+    build: ./services/LoanService
+    environment:
+      ConnectionStrings__LoanDb: Host=postgres;Port=5432;Database=loan_db;Username=loan_user;Password=${LOAN_DB_PASSWORD:-loan_password};GSS Encryption Mode=Disable
+      # Inside the Docker network a service is reached by its name and its internal port 8080.
+      Services__MemberService: http://member-service:8080
+      Services__BookService: http://book-service:8080
+    # Only the database is needed to start. The Loan Service deliberately does not wait for
+    # the Book and Member Services: it calls them per request and returns 503 when they are down.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The only service with a port on your machine: clients reach everything through the gateway.
+  # The other services are only reachable inside the Docker network (see docker-compose.debug.yml).
+  api-gateway:
+    build: ./services/ApiGateway
+    environment:
+      Services__BookService: http://book-service:8080
+      Services__MemberService: http://member-service:8080
+      Services__LoanService: http://loan-service:8080
+      Gateway__ApiKey: ${GATEWAY_API_KEY:-dev-api-key}
+    ports:
+      - "5000:8080"
 
 volumes:
   postgres-data:

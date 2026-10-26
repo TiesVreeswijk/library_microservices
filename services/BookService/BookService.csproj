@@ -11,6 +11,8 @@
     <!-- Generates the OpenAPI description (/openapi/v1.json) and shows it as a web page (/swagger). -->
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
     <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="10.3.0" />
+    <!-- Lets the /health endpoint check that the database is reachable. -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.12" />
     <!-- Only needed for 'dotnet ef migrations add'; not shipped with the app. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <PrivateAssets>all</PrivateAssets>

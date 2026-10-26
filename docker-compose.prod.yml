@@ -1,0 +1,75 @@
+# Production: the EduCloud VM (see docs/03-deployment.md).
+#
+# Differences with docker-compose.yml:
+# - No build: the images are built by GitHub Actions and pulled from GitHub Container Registry.
+# - Every service has its own tag variable in .env (BOOK_SERVICE_TAG etc.), so one service can
+#   get a new version while the others keep running the version they have.
+# - No default passwords: Compose stops with an error when a value is missing from .env.
+# - Containers restart by themselves after a crash or a reboot of the VM.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+name: library
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Read by db/init/01-create-databases.sh
+      BOOK_DB_PASSWORD: ${BOOK_DB_PASSWORD:?set BOOK_DB_PASSWORD in .env}
+      MEMBER_DB_PASSWORD: ${MEMBER_DB_PASSWORD:?set MEMBER_DB_PASSWORD in .env}
+      LOAN_DB_PASSWORD: ${LOAN_DB_PASSWORD:?set LOAN_DB_PASSWORD in .env}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  book-service:
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/library-book-service:${BOOK_SERVICE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__BookDb: Host=postgres;Port=5432;Database=book_db;Username=book_user;Password=${BOOK_DB_PASSWORD};GSS Encryption Mode=Disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  member-service:
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/library-member-service:${MEMBER_SERVICE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__MemberDb: Host=postgres;Port=5432;Database=member_db;Username=member_user;Password=${MEMBER_DB_PASSWORD};GSS Encryption Mode=Disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  loan-service:
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/library-loan-service:${LOAN_SERVICE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__LoanDb: Host=postgres;Port=5432;Database=loan_db;Username=loan_user;Password=${LOAN_DB_PASSWORD};GSS Encryption Mode=Disable
+      Services__MemberService: http://member-service:8080
+      Services__BookService: http://book-service:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Still the only service with a published port. On the VM it listens on port 80.
+  api-gateway:
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/library-api-gateway:${API_GATEWAY_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      Services__BookService: http://book-service:8080
+      Services__MemberService: http://member-service:8080
+      Services__LoanService: http://loan-service:8080
+      Gateway__ApiKey: ${GATEWAY_API_KEY:?set GATEWAY_API_KEY in .env}
+    ports:
+      - "80:8080"
+
+volumes:
+  postgres-data:

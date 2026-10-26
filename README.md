@@ -13,6 +13,9 @@ db/init                Postgres init script that creates one database + user per
 docs                   Project documentation
 docker-compose.yml     Starts Postgres and all services
 docker-compose.debug.yml  Opens the service ports for debugging
+docker-compose.prod.yml   Production on the EduCloud VM (see docs/03-deployment.md)
+deploy                 Script that deploys one service on the VM
+.github/workflows      One build-and-deploy pipeline per service
 .env.example           Passwords and the API key; copy to .env to change them
 ```
 

@@ -1,0 +1,16 @@
+# Opens the ports of the services again, so you can use their own Swagger page
+# while debugging. Normally only the gateway (port 5000) is reachable.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up --build
+#
+# Swagger: http://localhost:5001/swagger (books), :5002 (members), :5003 (loans)
+services:
+  book-service:
+    ports:
+      - "5001:8080"
+  member-service:
+    ports:
+      - "5002:8080"
+  loan-service:
+    ports:
+      - "5003:8080"

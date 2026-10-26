@@ -43,10 +43,19 @@ the results in memory.
 
 ## Current state
 
-Book Service (port 5001), Member Service (port 5002) and Loan Service (port 5003), all .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
+API Gateway (port 5000, the only published port) in front of the Book, Member and
+Loan Service, all .NET 10 minimal APIs, EF Core + Npgsql, migrations applied at
 startup, seed data (5 books, 3 members of which one is blocked; no loans), `/health`
 endpoint with a database check, Swagger on `/swagger`. Postgres runs in Docker
-with one database and user per service. No gateway yet.
+with one database and user per service.
+
+The gateway (`services/ApiGateway`) is hand-written on purpose (no YARP): it strips
+`/api` and forwards `/api/books|members|loans/...` to the owning service, rewrites
+`Location` headers, returns 503 when a service is unreachable, hides the internal
+`/books/{id}/checkout` and `/return`, and requires an `X-Api-Key` header
+(`GATEWAY_API_KEY`) on everything under `/api`. `/health` needs no key. The service
+ports 5001-5003 are only opened by `docker-compose.debug.yml`. No API Composition
+or circuit breaker yet (sprint 5).
 
 The Loan Service calls the Member Service (is the member blocked?) and the Book
 Service (`POST /books/{id}/checkout` and `/return`, atomic `UPDATE ... WHERE`) over

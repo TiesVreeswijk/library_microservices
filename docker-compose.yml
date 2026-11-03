@@ -1,3 +1,13 @@
+# Health Check API in Docker: Compose calls each service's /health every few seconds.
+# /health also checks the service's database, so "healthy" means "running and able to work".
+# -f makes curl fail on a 503 (Unhealthy). Every service uses the same check, so it is written once.
+x-service-healthcheck: &service-healthcheck
+  test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 10s
+
 services:
   postgres:
     image: postgres:18
@@ -25,6 +35,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck: *service-healthcheck
 
   member-service:
     build: ./services/MemberService
@@ -33,6 +44,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck: *service-healthcheck
 
   loan-service:
     build: ./services/LoanService
@@ -46,6 +58,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck: *service-healthcheck
 
   # The only service with a port on your machine: clients reach everything through the gateway.
   # The other services are only reachable inside the Docker network (see docker-compose.debug.yml).
@@ -58,6 +71,17 @@ services:
       Gateway__ApiKey: ${GATEWAY_API_KEY:-dev-api-key}
     ports:
       - "5000:8080"
+    # Wait until the services are healthy, so the first requests after startup don't get a 503.
+    # After startup the gateway does not need them: when one goes down later, the gateway
+    # answers 503 for that service only, and the overview falls back to a partial answer.
+    depends_on:
+      book-service:
+        condition: service_healthy
+      member-service:
+        condition: service_healthy
+      loan-service:
+        condition: service_healthy
+    healthcheck: *service-healthcheck
 
 volumes:
   postgres-data:

@@ -54,8 +54,17 @@ The gateway (`services/ApiGateway`) is hand-written on purpose (no YARP): it str
 `Location` headers, returns 503 when a service is unreachable, hides the internal
 `/books/{id}/checkout` and `/return`, and requires an `X-Api-Key` header
 (`GATEWAY_API_KEY`) on everything under `/api`. `/health` needs no key. The service
-ports 5001-5003 are only opened by `docker-compose.debug.yml`. No API Composition
-or circuit breaker yet (sprint 5).
+ports 5001-5003 are only opened by `docker-compose.debug.yml`.
+
+API Composition is done: `GET /api/members/{id}/overview` (`MemberOverview.cs`) joins
+member, loans and book details, and falls back to a partial answer with `warnings`
+when the Loan or Book Service is down (503 only when the Member Service is down).
+Every gateway HttpClient has a Polly pipeline (`Microsoft.Extensions.Http.Resilience`):
+a circuit breaker per service (50% failures, min 3 calls, 30s window, 15s break; only
+no-connection/timeout counts, not 5xx) around a 12 second timeout. Docker Compose
+healthchecks call `/health` with curl (installed in each Dockerfile) and the gateway
+waits for the three services to be healthy. Sprint 6 (externalized config, logging
+with a request ID, reflection) is next.
 
 The Loan Service calls the Member Service (is the member blocked?) and the Book
 Service (`POST /books/{id}/checkout` and `/return`, atomic `UPDATE ... WHERE`) over

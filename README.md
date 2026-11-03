@@ -59,6 +59,64 @@ removes `/api` and forwards the request to the service that owns the resource:
 call them, so clients borrow through `POST /api/loans`. If a service cannot be
 reached, the gateway answers 503.
 
+### Member overview (API Composition)
+
+`GET /api/members/{id}/overview` is answered by the gateway itself. It asks the
+Member Service for the member and the Loan Service for their loans (both at the
+same time), then the Book Service for each borrowed book, and joins the answers:
+
+```json
+{
+  "member": { "id": 1, "name": "Anna de Vries", "cardNumber": "LIB0001", "isBlocked": false },
+  "loans": [
+    { "id": 4, "bookId": 1, "book": { "id": 1, "title": "The Pragmatic Programmer", "author": "...", "isbn": "..." },
+      "loanedAt": "...", "dueDate": "...", "returnedAt": null }
+  ],
+  "warnings": []
+}
+```
+
+| Service down   | Result |
+|----------------|--------|
+| Member Service | 503: without the member there is nothing to show |
+| Loan Service   | 200 with `"loans": null` and a warning |
+| Book Service   | 200 with `"book": null` on each loan and a warning |
+
+404 means the member does not exist.
+
+```bash
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/1/overview
+```
+
+### Timeouts and circuit breaker
+
+Every call from the gateway to a service goes through Polly
+(`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Program.cs`):
+
+- **Timeout**: a call that takes longer than 12 seconds fails.
+- **Circuit breaker**, one per service: when at least half of the calls in
+  the last 30 seconds got no answer (and there were at least 3), the circuit
+  *opens*. For 15 seconds the gateway answers 503 straight away without calling
+  that service. Then it is *half-open*: one trial call goes through. If that call
+  works, the circuit *closes* again. If it fails, it opens for another 15 seconds.
+
+Only "no answer" (no connection or the timeout) counts as a failure, not a 5xx
+response. Because each service has its own circuit, a broken Book Service does
+not affect calls to the other two.
+
+To see it: `docker compose stop book-service`, then call
+`/api/members/1/overview` and `/api/books/1` a few times. The 503 comes back in a
+few milliseconds and says the gateway stopped calling the service. Start the
+service again with `docker compose start book-service`, wait 15 seconds, and
+`/api/books/1` works again.
+
+### Health checks
+
+Every service has a `/health` endpoint that also checks its database. Docker
+Compose calls it every 5 seconds (with `curl`, which the Dockerfiles install),
+so `docker compose ps` shows `healthy` or `unhealthy` per service. The gateway
+waits until all three services are healthy before it starts.
+
 ```bash
 curl -H "X-Api-Key: dev-api-key" localhost:5000/api/books
 ```
@@ -223,8 +281,10 @@ Example: Member Service (this is how it was added).
      depends_on:
        postgres:
          condition: service_healthy
+     healthcheck: *service-healthcheck
    ```
-   No `ports:` here: only the gateway is reachable from outside. Add the
+   Do the same in `docker-compose.prod.yml`, and add the service to the
+   gateway's `depends_on`. No `ports:` here: only the gateway is reachable from outside. Add the
    port to `docker-compose.debug.yml` instead (`"5002:8080"`).
 5. Make it reachable through the gateway: add
    `Services__MemberService: http://member-service:8080` to the `api-gateway`

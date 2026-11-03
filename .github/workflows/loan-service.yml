@@ -1,0 +1,24 @@
+# Loan Service pipeline. Only runs when something in services/LoanService changes,
+# so a change in another service never rebuilds or redeploys this one.
+name: Loan Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/LoanService/**"
+      - ".github/workflows/loan-service.yml"
+  # Adds a "Run workflow" button in the Actions tab, used for the first deploy.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    uses: ./.github/workflows/build-and-deploy.yml
+    with:
+      service: loan-service
+      context: services/LoanService
+      tag-variable: LOAN_SERVICE_TAG

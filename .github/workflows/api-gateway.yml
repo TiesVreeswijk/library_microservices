@@ -1,0 +1,24 @@
+# API Gateway pipeline. Only runs when something in services/ApiGateway changes,
+# so a change in another service never rebuilds or redeploys this one.
+name: API Gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/ApiGateway/**"
+      - ".github/workflows/api-gateway.yml"
+  # Adds a "Run workflow" button in the Actions tab, used for the first deploy.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    uses: ./.github/workflows/build-and-deploy.yml
+    with:
+      service: api-gateway
+      context: services/ApiGateway
+      tag-variable: API_GATEWAY_TAG

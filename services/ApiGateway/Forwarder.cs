@@ -1,4 +1,6 @@
 using System.Net.Http.Headers;
+using Polly;
+using Polly.CircuitBreaker;
 
 namespace ApiGateway;
 
@@ -23,10 +25,13 @@ public static class Forwarder
         {
             response = await service.SendAsync(request, context.RequestAborted);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        catch (Exception e) when (IsUnreachable(e))
         {
-            await Results.Problem("The service behind this route cannot be reached. Try again later.",
-                statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+            // An open circuit means the gateway did not even try: the service failed too often just now.
+            var detail = e is BrokenCircuitException
+                ? "The service behind this route failed several times just now, so the gateway stopped calling it for a moment. Try again later."
+                : "The service behind this route cannot be reached. Try again later.";
+            await Results.Problem(detail, statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
             return;
         }
 
@@ -44,4 +49,10 @@ public static class Forwarder
             await response.Content.CopyToAsync(context.Response.Body);
         }
     }
+
+    // No connection, a timeout, or the circuit breaker refused the call (ExecutionRejectedException
+    // is the base class of Polly's TimeoutRejectedException and BrokenCircuitException).
+    // EnsureSuccessStatusCode also throws HttpRequestException for a 5xx answer.
+    public static bool IsUnreachable(Exception e) =>
+        e is HttpRequestException or TaskCanceledException or ExecutionRejectedException;
 }

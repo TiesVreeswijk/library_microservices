@@ -1,0 +1,24 @@
+# Book Service pipeline. Only runs when something in services/BookService changes,
+# so a change in another service never rebuilds or redeploys this one.
+name: Book Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/BookService/**"
+      - ".github/workflows/book-service.yml"
+  # Adds a "Run workflow" button in the Actions tab, used for the first deploy.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    uses: ./.github/workflows/build-and-deploy.yml
+    with:
+      service: book-service
+      context: services/BookService
+      tag-variable: BOOK_SERVICE_TAG

@@ -17,8 +17,9 @@ public static class MemberOverview
     // Book is null when the Book Service is down or the book was deleted.
     public record LoanWithBook(int Id, int BookId, BookInfo? Book, DateTime LoanedAt, DateTime DueDate, DateTime? ReturnedAt);
 
-    // Loans is null when the Loan Service is down. Warnings tells the client what is missing and why.
-    public record Overview(MemberInfo Member, List<LoanWithBook>? Loans, List<string> Warnings);
+    // Loans is null when the Loan Service is down. Warnings tells a person what is missing and why;
+    // Degraded lists the services that were missing, e.g. ["book-service"], so a program can check it.
+    public record Overview(MemberInfo Member, List<LoanWithBook>? Loans, List<string> Warnings, List<string> Degraded);
 
     public static async Task<IResult> GetAsync(int id, IHttpClientFactory clients, CancellationToken cancel)
     {
@@ -43,26 +44,34 @@ public static class MemberOverview
         // Fallback: without the Loan Service we still show the member, with a warning.
         var (loans, loansReachable) = loansTask.Result;
         if (!loansReachable)
-            return Results.Ok(new Overview(member, null, ["The Loan Service cannot be reached, so the loans are missing."]));
+            return Results.Ok(new Overview(member, null,
+                ["The Loan Service cannot be reached, so the loans are missing."], ["loan-service"]));
 
-        // 2. The Loan Service only knows book ids. Ask the Book Service for each book once
-        //    (a member can borrow the same book twice), all at the same time.
+        // 2. The Loan Service only knows book ids. Ask the Book Service for all those books in one
+        //    call (GET /books?ids=1&ids=2), instead of one call per book. This has to wait for step 1,
+        //    because we only know which books to ask for once we have the loans.
         loans ??= [];
         var bookIds = loans.Select(l => l.BookId).Distinct().ToList();
-        var bookAnswers = await Task.WhenAll(bookIds.Select(bookId => GetAsync<BookInfo>(bookService, $"/books/{bookId}", cancel)));
-        var books = bookIds.Zip(bookAnswers).ToDictionary(pair => pair.First, pair => pair.Second.Value);
+        var (bookList, booksReachable) = bookIds.Count == 0
+            ? ([], true)
+            : await GetAsync<List<BookInfo>>(bookService, "/books?" + string.Join("&", bookIds.Select(b => $"ids={b}")), cancel);
+        var books = (bookList ?? []).ToDictionary(b => b.Id);
 
-        // Fallback: without the Book Service the loans are still shown, only without titles.
+        // Fallback: without the Book Service the loans are still shown, only with "book": null.
         var warnings = new List<string>();
-        if (bookAnswers.Any(answer => !answer.Reachable))
-            warnings.Add("The Book Service cannot be reached, so some book details are missing.");
+        var degraded = new List<string>();
+        if (!booksReachable)
+        {
+            warnings.Add("The Book Service cannot be reached, so the book details are missing.");
+            degraded.Add("book-service");
+        }
 
-        // 3. Join in memory: put the book next to each loan.
+        // 3. Join in memory: put the book next to each loan. A book that was deleted stays null too.
         var loansWithBooks = loans
-            .Select(l => new LoanWithBook(l.Id, l.BookId, books[l.BookId], l.LoanedAt, l.DueDate, l.ReturnedAt))
+            .Select(l => new LoanWithBook(l.Id, l.BookId, books.GetValueOrDefault(l.BookId), l.LoanedAt, l.DueDate, l.ReturnedAt))
             .ToList();
 
-        return Results.Ok(new Overview(member, loansWithBooks, warnings));
+        return Results.Ok(new Overview(member, loansWithBooks, warnings, degraded));
     }
 
     // Value is null when the service answered 404. Reachable is false when the service is down,

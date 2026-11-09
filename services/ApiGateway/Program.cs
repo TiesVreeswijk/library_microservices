@@ -1,52 +1,38 @@
 using ApiGateway;
-using Microsoft.Extensions.Http.Resilience;
-using Polly;
-using Polly.Timeout;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// The services behind the gateway: the name used in configuration, and the name used in
+// logs, errors and /api/diagnostics/circuits.
+var services = new Dictionary<string, string>
+{
+    ["BookService"] = "book-service",
+    ["MemberService"] = "member-service",
+    ["LoanService"] = "loan-service",
+};
+
+builder.Services.AddSingleton(new CircuitStates(services.Values));
+
+// Polly logs every attempt of every call by itself, which buries the interesting lines.
+// Resilience.cs logs the retries, timeouts and circuit state changes itself, so Polly's own logs are off.
+builder.Logging.AddFilter("Polly", LogLevel.None);
+
 // Where the services live, from Services__BookService, Services__MemberService and Services__LoanService.
 // In Docker Compose the service name is the host name, e.g. http://book-service:8080.
-string ServiceUrl(string name) => builder.Configuration[$"Services:{name}"]
-    ?? throw new InvalidOperationException($"Set the environment variable Services__{name}.");
-
-// One named HttpClient per service, each with its own timeout and circuit breaker (Polly).
-// Because every service has its own circuit breaker, a broken Book Service never stops
-// the gateway from calling the Member or Loan Service.
-foreach (var name in new[] { "BookService", "MemberService", "LoanService" })
+// Each one gets its own HttpClient with a timeout, retry and circuit breaker (see Resilience.cs).
+foreach (var (name, displayName) in services)
 {
-    var url = ServiceUrl(name);
-    builder.Services.AddHttpClient(name, c => c.BaseAddress = new Uri(url))
-        .AddResilienceHandler("resilience", pipeline =>
-        {
-            // Circuit breaker. Closed: calls go through and failures are counted.
-            // Open: when at least half of the calls in the last 30 seconds failed (and there were
-            // at least 3), the gateway stops calling the service for 15 seconds and fails at once
-            // with a BrokenCircuitException, instead of letting every client wait for a timeout.
-            // Half-open: after those 15 seconds one trial call goes through. If it works the
-            // circuit closes again, if it fails it stays open for another 15 seconds.
-            pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
-            {
-                FailureRatio = 0.5,
-                MinimumThroughput = 3,
-                SamplingDuration = TimeSpan.FromSeconds(30),
-                BreakDuration = TimeSpan.FromSeconds(15),
-                // Only "no answer" counts as a failure: no connection or the timeout below.
-                // A 5xx is an answer. Otherwise a 503 from the Loan Service, sent because the Book
-                // Service is down, would also open the circuit of the healthy Loan Service.
-                ShouldHandle = args => ValueTask.FromResult(args.Outcome.Exception is HttpRequestException or TimeoutRejectedException),
-            });
-
-            // Timeout per call. Longer than the Loan Service's own 5 second timeout,
-            // because POST /loans can call two services before it answers.
-            // Added after the circuit breaker, so it runs inside it and a timeout counts as a failure.
-            pipeline.AddTimeout(TimeSpan.FromSeconds(12));
-        });
+    var url = builder.Configuration[$"Services:{name}"]
+        ?? throw new InvalidOperationException($"Set the environment variable Services__{name}.");
+    builder.Services.AddServiceClient(builder.Configuration, name, displayName, url);
 }
 
 // The key clients must send in the X-Api-Key header, from the environment variable Gateway__ApiKey.
 var apiKey = builder.Configuration["Gateway:ApiKey"]
     ?? throw new InvalidOperationException("Set the environment variable Gateway__ApiKey.");
+
+// GET /api/diagnostics/circuits is only for demos, so it is off unless Gateway__EnableDiagnostics=true.
+var diagnosticsEnabled = builder.Configuration.GetValue("Gateway:EnableDiagnostics", false);
 
 // The gateway has no database, so its health check only says "the gateway process is up".
 builder.Services.AddHealthChecks();
@@ -88,8 +74,13 @@ app.MapGet("/api/members/{id:int}/overview", MemberOverview.GetAsync);
 app.Map("/api/books/{id}/checkout", () => Results.NotFound());
 app.Map("/api/books/{id}/return", () => Results.NotFound());
 
+// Demo only: the current state of each circuit, e.g. { "book-service": "Open", "loan-service": "Closed", ... }
+if (diagnosticsEnabled)
+    app.MapGet("/api/diagnostics/circuits", (CircuitStates circuits) => circuits.All());
+
 app.Run();
 
 void MapRoute(string prefix, string serviceName) =>
-    app.Map(prefix + "/{**rest}", (HttpContext context, IHttpClientFactory clients) =>
-        Forwarder.ForwardAsync(context, clients.CreateClient(serviceName), context.Request.Path.Value!["/api".Length..]));
+    app.Map(prefix + "/{**rest}", (HttpContext context, IHttpClientFactory clients, CircuitStates circuits) =>
+        Forwarder.ForwardAsync(context, clients.CreateClient(serviceName), context.Request.Path.Value!["/api".Length..],
+            services[serviceName], circuits));

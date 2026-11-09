@@ -1,5 +1,6 @@
 using BookService;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -33,13 +34,21 @@ app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "Book Se
 
 app.MapHealthChecks("/health");
 
+// Demo only: optional delay and random 500s, see FaultInjection.cs. Does nothing unless configured.
+app.UseFaultInjection();
+
 var books = app.MapGroup("/books").WithTags("Books");
 
 // The Results<...> return types list every possible response,
 // so the OpenAPI description (and Swagger) shows all status codes per endpoint.
 
-books.MapGet("/", async (BookDbContext db) =>
-    await db.Books.OrderBy(b => b.Id).ToListAsync());
+// GET /books returns all books. GET /books?ids=1&ids=3 returns only those books (books that don't
+// exist are left out). The gateway's member overview uses this to fetch every book it needs in one call.
+books.MapGet("/", async ([FromQuery] int[]? ids, BookDbContext db) =>
+    await db.Books
+        .Where(b => ids == null || ids.Length == 0 || ids.Contains(b.Id))
+        .OrderBy(b => b.Id)
+        .ToListAsync());
 
 books.MapGet("/{id:int}", async Task<Results<Ok<Book>, NotFound>> (int id, BookDbContext db) =>
     await db.Books.FindAsync(id) is Book book

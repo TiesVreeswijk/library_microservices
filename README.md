@@ -63,7 +63,8 @@ reached, the gateway answers 503.
 
 `GET /api/members/{id}/overview` is answered by the gateway itself. It asks the
 Member Service for the member and the Loan Service for their loans (both at the
-same time), then the Book Service for each borrowed book, and joins the answers:
+same time), then the Book Service for all borrowed books in one call
+(`GET /books?ids=1&ids=3`), and joins the answers:
 
 ```json
 {
@@ -72,15 +73,16 @@ same time), then the Book Service for each borrowed book, and joins the answers:
     { "id": 4, "bookId": 1, "book": { "id": 1, "title": "The Pragmatic Programmer", "author": "...", "isbn": "..." },
       "loanedAt": "...", "dueDate": "...", "returnedAt": null }
   ],
-  "warnings": []
+  "warnings": [],
+  "degraded": []
 }
 ```
 
 | Service down   | Result |
 |----------------|--------|
 | Member Service | 503: without the member there is nothing to show |
-| Loan Service   | 200 with `"loans": null` and a warning |
-| Book Service   | 200 with `"book": null` on each loan and a warning |
+| Loan Service   | 200 with `"loans": null`, a warning and `"degraded": ["loan-service"]` |
+| Book Service   | 200 with `"book": null` on each loan, a warning and `"degraded": ["book-service"]` |
 
 404 means the member does not exist.
 
@@ -88,27 +90,74 @@ same time), then the Book Service for each borrowed book, and joins the answers:
 curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/1/overview
 ```
 
-### Timeouts and circuit breaker
+### Timeouts, retries and circuit breaker
 
-Every call from the gateway to a service goes through Polly
-(`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Program.cs`):
+Every call from the gateway to a service goes through a Polly pipeline
+(`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Resilience.cs`).
+Each service has its own pipeline, so a broken Book Service does not affect calls
+to the other two. From outside to inside:
 
-- **Timeout**: a call that takes longer than 12 seconds fails.
-- **Circuit breaker**, one per service: when at least half of the calls in
-  the last 30 seconds got no answer (and there were at least 3), the circuit
-  *opens*. For 15 seconds the gateway answers 503 straight away without calling
-  that service. Then it is *half-open*: one trial call goes through. If that call
-  works, the circuit *closes* again. If it fails, it opens for another 15 seconds.
+1. **Retry**: a failed `GET` is tried at most 2 more times, after about 0.2 s and
+   0.4 s (exponential backoff with jitter). `POST`, `PUT` and `DELETE` are never
+   retried: a `POST /loans` that timed out may still have worked, and trying it
+   again could borrow the same book twice.
+2. **Circuit breaker**: when at least half of the calls in the last 10 seconds
+   failed (and there were at least 4), the circuit *opens*. For 15 seconds the
+   gateway answers 503 straight away without calling that service. After that
+   the next call is a trial (*half-open*). If it works the circuit *closes*
+   again, if it fails it opens for another 15 seconds.
+3. **Timeout per attempt**: 2 seconds, 12 for the Loan Service (its `POST /loans`
+   can wait up to 5 seconds on each of two other services).
 
-Only "no answer" (no connection or the timeout) counts as a failure, not a 5xx
-response. Because each service has its own circuit, a broken Book Service does
-not affect calls to the other two.
+A failure is: no connection, the timeout, or a 500/502/504 answer. A 503 does not
+count: the Loan Service answers 503 when the Book Service is down, and that should
+not open the circuit of the healthy Loan Service. 4xx answers never count.
 
-To see it: `docker compose stop book-service`, then call
-`/api/members/1/overview` and `/api/books/1` a few times. The 503 comes back in a
-few milliseconds and says the gateway stopped calling the service. Start the
-service again with `docker compose start book-service`, wait 15 seconds, and
-`/api/books/1` works again.
+Every state change is logged with the service name (`docker compose logs -f api-gateway`),
+and so is every retry and timeout. A 503 from the gateway tells you which service
+it is about and what its circuit is doing:
+
+```json
+{ "status": 503, "detail": "...", "error": "book-service unavailable", "circuit": "Open" }
+```
+
+**Configuration** (Externalized Configuration): the breaker values come from the
+`CIRCUIT_*` variables in `.env` (see `.env.example`). Inside the gateway they are
+`Resilience__FailureRatio`, `Resilience__MinimumThroughput`,
+`Resilience__SamplingDurationSeconds`, `Resilience__BreakDurationSeconds`,
+`Resilience__TimeoutSeconds` and `Resilience__RetryAttempts`. Put the service
+name in between to change one service only, e.g. `Resilience__BookService__TimeoutSeconds=5`.
+
+**Diagnostics** (demo only, `Gateway__EnableDiagnostics=true`, on in
+`docker-compose.yml`, off in production):
+
+```bash
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/diagnostics/circuits
+# {"book-service":"Open","loan-service":"Closed","member-service":"Closed"}
+```
+
+Polly only goes from Open to HalfOpen when a call comes in after the 15 seconds,
+so the state stays `Open` until someone calls that service again.
+
+**See it happen**: `docker compose stop book-service`, then call
+`/api/members/1/overview` or `/api/books/1` a few times. The first calls take a
+moment (retries), then the circuit opens and the 503 comes back in a few
+milliseconds. `docker compose start book-service`, wait 15 seconds, call it again:
+the logs show Open → HalfOpen → Closed.
+
+**Fault injection** (demo only): the Book Service can be made slow or broken
+without stopping it. Set the values in `.env` (or in the shell) and recreate only
+that container:
+
+```bash
+BOOK_FAULT_DELAY_MS=3000 docker compose up -d book-service      # every call takes 3 s -> timeouts
+BOOK_FAULT_FAILURE_RATE=0.7 docker compose up -d book-service   # 70% of calls get a 500
+docker compose up -d book-service                               # back to normal
+```
+
+(In PowerShell: `$env:BOOK_FAULT_DELAY_MS=3000; docker compose up -d book-service`,
+and `Remove-Item Env:BOOK_FAULT_DELAY_MS` to turn it off again.)
+`/health` is never affected, so Docker keeps seeing the service as healthy.
 
 ### Health checks
 
@@ -144,6 +193,7 @@ Then open http://localhost:5001/swagger (books), http://localhost:5002/swagger
 | Method | Path          | Success | Errors   |
 |--------|---------------|---------|----------|
 | GET    | /books        | 200     |          |
+| GET    | /books?ids=1&ids=3 | 200 |        |
 | GET    | /books/{id}   | 200     | 404      |
 | POST   | /books        | 201     | 400, 409 |
 | PUT    | /books/{id}   | 200     | 400, 404, 409 |
@@ -151,6 +201,9 @@ Then open http://localhost:5001/swagger (books), http://localhost:5002/swagger
 | POST   | /books/{id}/checkout | 200 | 404, 409 |
 | POST   | /books/{id}/return   | 200 | 404, 409 |
 | GET    | /health       | 200     | 503      |
+
+`/books?ids=...` returns only those books (unknown ids are left out); the
+gateway's member overview uses it to get every title in one call.
 
 `checkout` lowers `availableCopies` by 1 and `return` raises it by 1; they are
 called by the Loan Service and not reachable through the gateway. 409 means no copy is available (checkout) or all

@@ -32,6 +32,9 @@ services:
     build: ./services/BookService
     environment:
       ConnectionStrings__BookDb: Host=postgres;Port=5432;Database=book_db;Username=book_user;Password=${BOOK_DB_PASSWORD:-book_password};GSS Encryption Mode=Disable
+      # Demo only: make the Book Service slow or fail on purpose (0 = off). See FaultInjection.cs.
+      FaultInjection__DelayMs: ${BOOK_FAULT_DELAY_MS:-0}
+      FaultInjection__FailureRate: ${BOOK_FAULT_FAILURE_RATE:-0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +72,17 @@ services:
       Services__MemberService: http://member-service:8080
       Services__LoanService: http://loan-service:8080
       Gateway__ApiKey: ${GATEWAY_API_KEY:-dev-api-key}
+      # Demo endpoint GET /api/diagnostics/circuits (off in docker-compose.prod.yml).
+      Gateway__EnableDiagnostics: "true"
+      # Circuit breaker per service (see services/ApiGateway/Resilience.cs).
+      Resilience__FailureRatio: ${CIRCUIT_FAILURE_RATIO:-0.5}
+      Resilience__MinimumThroughput: ${CIRCUIT_MINIMUM_THROUGHPUT:-4}
+      Resilience__SamplingDurationSeconds: ${CIRCUIT_SAMPLING_SECONDS:-10}
+      Resilience__BreakDurationSeconds: ${CIRCUIT_BREAK_SECONDS:-15}
+      # Hide the "request started/finished" lines of ASP.NET Core and HttpClient, so the
+      # retry, timeout and circuit breaker lines are easy to follow in the logs.
+      Logging__LogLevel__Microsoft.AspNetCore: Warning
+      Logging__LogLevel__System.Net.Http.HttpClient: Warning
     ports:
       - "5000:8080"
     # Wait until the services are healthy, so the first requests after startup don't get a 503.

@@ -41,6 +41,17 @@ var app = builder.Build();
 
 app.MapHealthChecks("/health");
 
+// Correlation id: every request gets an X-Correlation-Id (a new one, unless the client sent one).
+// The gateway passes it on to the service and sends it back in the response, so one request can be
+// found in the logs of every service it went through.
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? Guid.NewGuid().ToString();
+    context.Request.Headers["X-Correlation-Id"] = correlationId;
+    context.Response.Headers["X-Correlation-Id"] = correlationId;
+    await next();
+});
+
 // Authentication happens here, once, for every service. The services themselves do not check
 // anything: they trust whatever reaches them inside the Docker network.
 // /health stays open so Docker and monitoring can call it without a key.
@@ -73,6 +84,10 @@ app.MapGet("/api/members/{id:int}/overview", MemberOverview.GetAsync);
 // POST /api/loans, so the gateway does not expose these. More specific routes win over {**rest}.
 app.Map("/api/books/{id}/checkout", () => Results.NotFound());
 app.Map("/api/books/{id}/return", () => Results.NotFound());
+
+// The same for the Loan Service endpoints that only the deletion saga in the Member Service uses.
+app.Map("/api/loans/active", () => Results.NotFound());
+app.Map("/api/loans/anonymize", () => Results.NotFound());
 
 // Demo only: the current state of each circuit, e.g. { "book-service": "Open", "loan-service": "Closed", ... }
 if (diagnosticsEnabled)

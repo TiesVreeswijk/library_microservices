@@ -56,7 +56,9 @@ removes `/api` and forwards the request to the service that owns the resource:
 | `/health`            | the gateway itself, no key needed |
 
 `/api/books/{id}/checkout` and `/return` give 404: only the Loan Service may
-call them, so clients borrow through `POST /api/loans`. If a service cannot be
+call them, so clients borrow through `POST /api/loans`. The same goes for
+`/api/loans/active` and `/api/loans/anonymize`, which only the Member Service's
+deletion saga uses. If a service cannot be
 reached, the gateway answers 503.
 
 ### Member overview (API Composition)
@@ -91,6 +93,9 @@ curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/1/overview
 ```
 
 ### Timeouts, retries and circuit breaker
+
+The gateway gives every request an `X-Correlation-Id` header (or keeps the one
+the client sent), passes it to the service and returns it in the response.
 
 Every call from the gateway to a service goes through a Polly pipeline
 (`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Resilience.cs`).
@@ -234,11 +239,51 @@ curl -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/books/6
 | GET    | /members/{id} | 200     | 404           |
 | POST   | /members      | 201     | 400, 409      |
 | PUT    | /members/{id} | 200     | 400, 404, 409 |
+| DELETE | /members/{id} | 202     | 404, 409      |
+| GET    | /members/{id}/deletion | 200 | 404     |
 | GET    | /health       | 200     | 503           |
 
 409 means another member already has that card number. Card numbers are
 stored without spaces and in capitals, so `lib 0004` becomes `LIB0004`.
 Member 3 (Carla Bakker) is seeded as blocked, for the Loan Service later.
+
+Every member has a `status`: `Active`, `PendingDeletion` (a deletion is
+running) or `Deleted`. Only `Active` members can borrow books or be changed
+with `PUT` (409 otherwise).
+
+### Deleting a member (Saga)
+
+`DELETE /members/{id}` starts a **saga**, answers `202 Accepted` at once, and
+points with `Location` to `GET /members/{id}/deletion`, which shows the saga's
+`state`, `currentStep`, `failureReason` and `retryCount`. The member is not
+removed but anonymized: name and card number are cleared, status `Deleted`. Their
+loans stay in the Loan Service without the member id.
+
+The deletion changes two databases (member_db and loan_db), and there is no
+transaction across two databases. So the Member Service orchestrates it as four
+local steps and saves the saga state (table `DeletionSagas` in member_db) after each:
+
+| # | Step | Service | Type | When it fails |
+|---|------|---------|------|---------------|
+| 1 | Status → `PendingDeletion` | Member | compensatable | – (part of the DELETE request) |
+| 2 | Are there active loans? (`GET /loans/active`) | Loan | pivot | Active loans: undo step 1 (status back to `Active`), saga `Failed` |
+| 3 | Anonymize loan history (`POST /loans/anonymize`) | Loan | retryable | Retry until it works |
+| 4 | Anonymize member, status `Deleted` | Member | retryable | Retry until it works |
+
+A background worker (`DeletionSagaWorker.cs`) runs the steps and retries a step
+when the Loan Service is unreachable (2, 4, 8, 16, then every 30 seconds). Before
+the pivot it gives up after `Saga__MaxAttemptsBeforePivot` (default 10) attempts
+and compensates; after the pivot it never gives up. Step 1 also works as a lock:
+the Loan Service refuses new loans while the member is `PendingDeletion`.
+
+Every saga step is logged with the saga id, and the calls to the Loan Service
+carry it in `X-Correlation-Id`, so one deletion can be followed through both
+services: `docker compose logs -f member-service loan-service`.
+
+```bash
+curl -i -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/members/2
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/2/deletion
+```
 
 ```bash
 curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members
@@ -262,7 +307,7 @@ curl -X PUT localhost:5000/api/members/2 \
 `POST /loans` takes `{"memberId": 1, "bookId": 2}` and does three steps:
 
 1. Ask the Member Service for the member: 400 if it does not exist, 409 if
-   the member is blocked.
+   the member is blocked or not `Active` (being deleted, or deleted).
 2. Ask the Book Service to check out one copy: 400 if the book does not
    exist, 409 if no copy is available.
 3. Save the loan, due in 14 days. If saving fails, the copy is given back.
@@ -274,6 +319,12 @@ not titles or names: those belong to the other services.
 
 The addresses of the other services come from `Services__MemberService` and
 `Services__BookService` (see `docker-compose.yml`).
+
+Two endpoints are only for the deletion saga in the Member Service and are not
+reachable through the gateway: `GET /loans/active?memberId=1` (loans not returned
+yet) and `POST /loans/anonymize` with `{"memberId": 1}` (sets `memberId` to
+`null` on all their loans). The anonymize call is idempotent: a second call
+changes nothing and still answers 200, so the saga can safely retry it.
 
 ```bash
 curl -X POST localhost:5000/api/loans \

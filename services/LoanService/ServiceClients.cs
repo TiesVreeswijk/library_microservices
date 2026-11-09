@@ -8,7 +8,8 @@ namespace LoanService;
 
 // Only the fields the Loan Service needs. Extra fields in the JSON are ignored,
 // so the Member Service can add fields without breaking this service.
-public record MemberInfo(int Id, string Name, bool IsBlocked);
+// Status is "Active", "PendingDeletion" or "Deleted".
+public record MemberInfo(int Id, string Name, bool IsBlocked, string Status);
 
 public class MemberServiceClient(HttpClient http)
 {

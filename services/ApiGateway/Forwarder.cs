@@ -12,6 +12,7 @@ public static class Forwarder
     {
         // 1. Build the same request for the service: same method, path without /api, same query string.
         var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), servicePath + context.Request.QueryString);
+        request.Headers.TryAddWithoutValidation("X-Correlation-Id", context.Request.Headers["X-Correlation-Id"].ToString());
 
         if (context.Request.ContentLength > 0)
         {

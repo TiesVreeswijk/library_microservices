@@ -10,7 +10,8 @@ public static class MemberOverview
 {
     // Only the fields the overview needs. Extra fields in the JSON are ignored,
     // so a service can add fields without breaking the gateway.
-    public record MemberInfo(int Id, string Name, string CardNumber, bool IsBlocked);
+    // CardNumber is null for a deleted member; Status is "Active", "PendingDeletion" or "Deleted".
+    public record MemberInfo(int Id, string Name, string? CardNumber, bool IsBlocked, string? Status);
     public record LoanInfo(int Id, int BookId, DateTime LoanedAt, DateTime DueDate, DateTime? ReturnedAt);
     public record BookInfo(int Id, string Title, string Author, string Isbn);
 

@@ -7,10 +7,12 @@ namespace ApiGateway;
 // The core of the gateway: copy the incoming request to a service and copy the answer back.
 public static class Forwarder
 {
-    public static async Task ForwardAsync(HttpContext context, HttpClient service, string servicePath)
+    public static async Task ForwardAsync(HttpContext context, HttpClient service, string servicePath,
+        string serviceName, CircuitStates circuits)
     {
         // 1. Build the same request for the service: same method, path without /api, same query string.
         var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), servicePath + context.Request.QueryString);
+        request.Headers.TryAddWithoutValidation("X-Correlation-Id", context.Request.Headers["X-Correlation-Id"].ToString());
 
         if (context.Request.ContentLength > 0)
         {
@@ -31,7 +33,14 @@ public static class Forwarder
             var detail = e is BrokenCircuitException
                 ? "The service behind this route failed several times just now, so the gateway stopped calling it for a moment. Try again later."
                 : "The service behind this route cannot be reached. Try again later.";
-            await Results.Problem(detail, statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+            // A standard problem+json body, plus "error" and "circuit" so a client (or the demo) can
+            // see at a glance which service is down and whether the circuit breaker is the reason.
+            await Results.Problem(detail, statusCode: StatusCodes.Status503ServiceUnavailable,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["error"] = $"{serviceName} unavailable",
+                    ["circuit"] = circuits.Get(serviceName),
+                }).ExecuteAsync(context);
             return;
         }
 

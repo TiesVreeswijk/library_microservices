@@ -39,7 +39,7 @@ namespace LoanService.Migrations
                     b.Property<DateTime>("LoanedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("MemberId")
+                    b.Property<int?>("MemberId")
                         .HasColumnType("integer");
 
                     b.Property<DateTime?>("ReturnedAt")

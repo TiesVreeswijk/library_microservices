@@ -51,7 +51,7 @@ If going deeper feels too narrow, asynchronous communication is the biggest step
 | Addition | What I build | Hours |
 | --- | --- | --- |
 | Messaging | Add RabbitMQ (with MassTransit) and let the Loan Service publish a `LoanCreated` event. The Book Service listens and updates the number of copies itself | ~14 |
-| [Saga](https://microservices.io/patterns/data/saga.html) | Make borrowing a book a saga: check member → create loan → update stock, with compensating actions when a step fails | ~16 |
+| [Saga](https://microservices.io/patterns/data/saga.html) | Make borrowing a book a saga: check member → create loan → update stock, with compensating actions when a step fails. **Done differently, see the update below:** I made *deleting a member* the saga, over HTTP without a broker | ~16 |
 | [Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html) | Make sure an event is never lost when a service crashes halfway, by writing it in the same transaction as the data | ~10 |
 | [Distributed tracing](https://microservices.io/patterns/observability/distributed-tracing.html) | Zipkin or Jaeger, so I can see in a timeline where the time goes in one request | ~16 |
 
@@ -81,3 +81,12 @@ With 48 hours my biggest risk is taking on too much, especially now that the bas
 - **Problems with Docker.** If the setup takes way longer than planned, I'll first run the services locally with `npm run dev` and move them into Docker later.
 - **Falling behind.** If I run out of time, I'll drop things in this order: logging, externalized config, circuit breaker, then the Member Service (then the overview endpoint combines two services instead of three). Three services with their own databases behind a working gateway is the minimum I need to show the pattern.
 - **Extra time left?** Then I start with a deep dive from the section above, instead of thinking up something new.
+
+## Update (November 2026)
+
+After sprint 5 I had some time left, so I went a bit deeper into resilience and added one new pattern:
+
+- **Resilience (part of the deep dive):** next to the circuit breaker the gateway now has retries with exponential backoff and jitter (only for `GET`, because retrying a `POST /loans` could borrow a book twice), a timeout per attempt, and all the values come from environment variables. Instead of Toxiproxy I added a small fault injection switch to the Book Service (a delay or a percentage of 500 errors), and a diagnostics endpoint that shows the state of each circuit. This is scenario 2 and 3 in `docs/DEMO.md`.
+- **Saga:** not for borrowing a book as I planned above, but for **deleting a member**. That flow is a better example because it has a real decision in the middle (does the member still have books?) and a clear compensating action (set the member back to active). It's an orchestrated saga in the Member Service over plain HTTP, with its state saved in member_db and a background worker that retries, so it didn't need RabbitMQ. This is scenario 4, 5 and 6 in `docs/DEMO.md`.
+
+Sprint 6 (config, logging with a request ID, reflection) is still next. Part of it is already done: the gateway passes an `X-Correlation-Id` along, and the saga logs every step with its id.

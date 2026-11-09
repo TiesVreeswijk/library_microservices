@@ -38,12 +38,13 @@ builder.Services.AddHealthChecks().AddDbContextCheck<LoanDbContext>("database");
 
 var app = builder.Build();
 
-// Create/update the database schema on startup. There is no seed data: a seeded loan
-// would also have to lower AvailableCopies in book_db, and this service cannot touch that.
+// Create/update the database schema and insert demo loans on startup (see SeedData.cs for how
+// they stay in step with the Book Service's copy counts).
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<LoanDbContext>();
     db.Database.Migrate();
+    SeedData.Seed(db);
 }
 
 // API description at /openapi/v1.json, browsable at /swagger.

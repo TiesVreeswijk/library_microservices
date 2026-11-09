@@ -1,0 +1,733 @@
+{
+  "info": {
+    "_postman_id": "7c2251ea-3e2f-5583-8c40-d73251b1c1c7",
+    "name": "Library microservices demo",
+    "description": "Every request of docs/DEMO.md, grouped per scenario. Set the collection variables baseUrl and apiKey if yours differ. The API key is sent as X-Api-Key on every request (collection auth); the gateway has no login.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-Api-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "apiKey",
+      "value": "dev-api-key"
+    }
+  ],
+  "item": [
+    {
+      "name": "Scenario 1. Normal flow",
+      "description": "API Gateway (routing + API key), API Composition, Database per Service.",
+      "item": [
+        {
+          "name": "Health (no key needed)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Healthy. /health is open so Docker can call it.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Books without API key -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books"
+              ]
+            },
+            "description": "The gateway stops it before any service sees it.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Books with API key",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books"
+              ]
+            },
+            "description": "7 books, forwarded to the Book Service as GET /books."
+          }
+        },
+        {
+          "name": "Loans of Anna (only ids)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans?memberId=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ],
+              "query": [
+                {
+                  "key": "memberId",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "The Loan Service only knows bookId, not titles."
+          }
+        },
+        {
+          "name": "Overview of Anna",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1/overview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1",
+                "overview"
+              ]
+            },
+            "description": "Member + 3 loans + titles from three services, \"degraded\": []."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scenario 2. Book Service down",
+      "description": "Circuit Breaker, API Composition fallback, Health Check API.",
+      "item": [
+        {
+          "name": "Circuits (all Closed)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/diagnostics/circuits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "diagnostics",
+                "circuits"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Overview, Book Service down (send 3x)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1/overview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1",
+                "overview"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    docker compose stop book-service\n\n1st: a few seconds (timeouts + retries), the circuit opens in the 1st or 2nd, then milliseconds. \"book\": null, \"degraded\": [\"book-service\"]."
+          }
+        },
+        {
+          "name": "Book 1 -> 503, circuit Open",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books",
+                "1"
+              ]
+            },
+            "description": "503 at once: \"error\": \"book-service unavailable\", \"circuit\": \"Open\"."
+          }
+        },
+        {
+          "name": "Circuits (book-service Open)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/diagnostics/circuits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "diagnostics",
+                "circuits"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Book 1 -> 200 (trial call closes the circuit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books",
+                "1"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    docker compose start book-service   (wait until healthy and 15 s have passed)\n\nLogs: Open -> HALF-OPEN -> CLOSED."
+          }
+        },
+        {
+          "name": "Circuits (all Closed again)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/diagnostics/circuits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "diagnostics",
+                "circuits"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scenario 3. Book Service slow or flaky",
+      "description": "Circuit Breaker, timeout + retry (Polly), Externalized Configuration.\n\n**Afterwards, in the terminal:**\n\n    bash: docker compose up -d book-service\n    PowerShell: Remove-Item Env:BOOK_FAULT_FAILURE_RATE; docker compose up -d book-service",
+      "item": [
+        {
+          "name": "Slow book (send 3x)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books",
+                "1"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    bash: BOOK_FAULT_DELAY_MS=3000 docker compose up -d book-service\n    PowerShell: $env:BOOK_FAULT_DELAY_MS=3000; docker compose up -d book-service\n\n1st: 503 after ~6 s (3 timeouts), 2nd: circuit opens, 3rd: 503 in milliseconds."
+          }
+        },
+        {
+          "name": "Circuits (book-service Open)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/diagnostics/circuits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "diagnostics",
+                "circuits"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Flaky book (send a few times)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "books",
+                "1"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    bash: BOOK_FAULT_FAILURE_RATE=0.3 docker compose up -d book-service\n    PowerShell: Remove-Item Env:BOOK_FAULT_DELAY_MS; $env:BOOK_FAULT_FAILURE_RATE=0.3; docker compose up -d book-service\n    wait 15 s for the circuit\n\nFirst 200s (logs: 'attempt 1 failed (HTTP 500), retrying'), then the low-threshold circuit opens anyway."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scenario 4. Delete a member who still has books",
+      "description": "Saga: pivot says no, step 1 is compensated.",
+      "item": [
+        {
+          "name": "Overview of Anna (2 books out)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1/overview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1",
+                "overview"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Delete Anna -> 202",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1"
+              ]
+            },
+            "description": "202 Accepted, Location: /api/members/1/deletion, state Running."
+          }
+        },
+        {
+          "name": "Saga status -> Failed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1/deletion",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1",
+                "deletion"
+              ]
+            },
+            "description": "\"state\": \"Failed\", \"failureReason\": \"The member still has 2 book(s) on loan.\""
+          }
+        },
+        {
+          "name": "Anna is Active again",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "1"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scenario 5. Delete a member without active loans",
+      "description": "Saga happy path, anonymized loan history.",
+      "item": [
+        {
+          "name": "Loans of Bram (all returned)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans?memberId=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ],
+              "query": [
+                {
+                  "key": "memberId",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Delete Bram -> 202",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "2"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Saga status -> Completed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/2/deletion",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "2",
+                "deletion"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Bram is anonymized",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "2"
+              ]
+            },
+            "description": "\"name\": \"\", \"cardNumber\": null, \"status\": \"Deleted\"."
+          }
+        },
+        {
+          "name": "No loans point to Bram any more",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans?memberId=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ],
+              "query": [
+                {
+                  "key": "memberId",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": "[]"
+          }
+        },
+        {
+          "name": "All loans (Bram's have memberId null)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Borrow as deleted member -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"memberId\": 2, \"bookId\": 3}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Delete Bram again -> 409",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "2"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scenario 6. Delete a member while the Loan Service is down",
+      "description": "Saga: saved state, retries, eventual consistency.",
+      "item": [
+        {
+          "name": "Delete Daan -> 202",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/4",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "4"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    docker compose stop loan-service\n\nStep 1 only needs member_db, so this still works."
+          }
+        },
+        {
+          "name": "Saga status -> Running, waiting (send a few times)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/4/deletion",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "4",
+                "deletion"
+              ]
+            },
+            "description": "currentStep CheckActiveLoans, retryCount going up, failureReason 'Waiting for the Loan Service'."
+          }
+        },
+        {
+          "name": "Daan is PendingDeletion",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/4",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "4"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Borrow while PendingDeletion -> 409 (be quick)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "loans"
+              ]
+            },
+            "description": "**First, in the terminal:**\n\n    docker compose start loan-service\n\nOnly before the worker's next retry.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"memberId\": 4, \"bookId\": 3}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Saga status -> Completed (within ~30 s)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/4/deletion",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "4",
+                "deletion"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Daan is Deleted",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/members/4",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "members",
+                "4"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    }
+  ]
+}

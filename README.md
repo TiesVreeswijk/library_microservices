@@ -10,7 +10,7 @@ services/BookService   Book Service (.NET 10, Minimal APIs, EF Core + Npgsql)
 services/MemberService Member Service (same setup, its own database)
 services/LoanService   Loan Service (calls the other two over HTTP)
 db/init                Postgres init script that creates one database + user per service
-docs                   Project documentation
+docs                   Project documentation; docs/DEMO.md is the demo script
 docker-compose.yml     Starts Postgres and all services
 docker-compose.debug.yml  Opens the service ports for debugging
 docker-compose.prod.yml   Production on the EduCloud VM (see docs/03-deployment.md)
@@ -29,8 +29,15 @@ docker compose up --build
 
 Everything is reached through the gateway on http://localhost:5000. The
 services themselves have no port on your machine; they are only reachable
-inside the Docker network. On startup each service applies its EF Core migrations. Books and members get seed data
-if their table is empty (5 books, 3 members); loans start empty.
+inside the Docker network. On startup each service applies its EF Core migrations and, if its table is
+empty, inserts the demo data from [docs/DEMO.md](docs/DEMO.md): 7 books, 5 members
+and 5 loans (member 1 has two books out). Each service seeds only its own database;
+the loan seed and the book copy counts are kept in step by hand.
+
+**Demo:** [docs/DEMO.md](docs/DEMO.md) walks through six scenarios (normal flow,
+a service down, a slow service, and three saga cases). The same requests are in
+[docs/demo.http](docs/demo.http) and [docs/postman/](docs/postman/); diagrams are
+in [docs/diagrams/](docs/diagrams/).
 
 Passwords: without a `.env` file, Compose uses the defaults from `.env.example`.
 To change them, `cp .env.example .env` and edit `.env`.
@@ -245,7 +252,7 @@ curl -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/books/6
 
 409 means another member already has that card number. Card numbers are
 stored without spaces and in capitals, so `lib 0004` becomes `LIB0004`.
-Member 3 (Carla Bakker) is seeded as blocked, for the Loan Service later.
+Member 3 (Carla Bakker) is seeded as blocked, so the Loan Service refuses her.
 
 Every member has a `status`: `Active`, `PendingDeletion` (a deletion is
 running) or `Deleted`. Only `Active` members can borrow books or be changed

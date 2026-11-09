@@ -55,6 +55,7 @@ services:
     restart: unless-stopped
     environment:
       ConnectionStrings__MemberDb: Host=postgres;Port=5432;Database=member_db;Username=member_user;Password=${MEMBER_DB_PASSWORD};GSS Encryption Mode=Disable
+      Services__LoanService: http://loan-service:8080
     depends_on:
       postgres:
         condition: service_healthy

@@ -35,10 +35,13 @@ My main pattern is the [API Gateway](https://microservices.io/patterns/apigatewa
 | [Health Check API](https://microservices.io/patterns/observability/health-check-api.html) | Every service gets a `/health` endpoint through the built-in ASP.NET Core health checks, which also checks its database connection | A service can be running but still broken. Now the gateway and Docker can see that |
 | [Circuit Breaker](https://microservices.io/patterns/reliability/circuit-breaker.html) | If a service keeps failing, the gateway (using Polly) stops calling it for a while and returns a fallback | Shows what happens when one service goes down, and how you stop that from breaking everything |
 | [Externalized Configuration](https://microservices.io/patterns/externalized-configuration.html) | Connection strings, ports and secrets come from environment variables, not from the code | Needed anyway once you run the same service in multiple environments |
+| [Saga](https://microservices.io/patterns/data/saga.html) *(added in November)* | Deleting a member is an orchestrated saga in the Member Service: mark the member, check for active loans, anonymize the loans, anonymize the member, with a compensating action when the check says no | Shows how to keep two databases consistent without a shared transaction |
 
 This also means I now have three services instead of two (Book, Loan and Member), so the composition endpoint actually has to combine data from more than one place.
 
 **What I'm still skipping in the base plan:** Saga, CQRS, Event Sourcing and Transactional Outbox. They solve real problems, but they all need a message broker and asynchronous thinking. With 4 hours a week that's too much. If I get more hours they're an option — I describe that in my planning document.
+
+**Update (November 2026): I did add a Saga after all.** Deleting a member turned out to be a good fit: it changes data in two databases (the member in member_db, the loan history in loan_db), and there's no transaction across both. I built it as an *orchestrated* saga: the Member Service runs the steps one by one over plain HTTP and saves the saga's state in its own database after each step. So it doesn't need a message broker, which was my main reason for skipping it. It still made me deal with the things I was worried about: a step that fails halfway, compensating instead of rolling back, and data that is only consistent *eventually*. The steps and the demo are in `docs/DEMO.md` (scenarios 4–6) and `docs/diagrams/delete-member-saga.md`. CQRS, Event Sourcing and Transactional Outbox are still out.
 
 ## What I'm going to build
 

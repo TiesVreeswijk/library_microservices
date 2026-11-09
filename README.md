@@ -10,7 +10,7 @@ services/BookService   Book Service (.NET 10, Minimal APIs, EF Core + Npgsql)
 services/MemberService Member Service (same setup, its own database)
 services/LoanService   Loan Service (calls the other two over HTTP)
 db/init                Postgres init script that creates one database + user per service
-docs                   Project documentation
+docs                   Project documentation; docs/DEMO.md is the demo script
 docker-compose.yml     Starts Postgres and all services
 docker-compose.debug.yml  Opens the service ports for debugging
 docker-compose.prod.yml   Production on the EduCloud VM (see docs/03-deployment.md)
@@ -29,8 +29,15 @@ docker compose up --build
 
 Everything is reached through the gateway on http://localhost:5000. The
 services themselves have no port on your machine; they are only reachable
-inside the Docker network. On startup each service applies its EF Core migrations. Books and members get seed data
-if their table is empty (5 books, 3 members); loans start empty.
+inside the Docker network. On startup each service applies its EF Core migrations and, if its table is
+empty, inserts the demo data from [docs/DEMO.md](docs/DEMO.md): 7 books, 5 members
+and 5 loans (member 1 has two books out). Each service seeds only its own database;
+the loan seed and the book copy counts are kept in step by hand.
+
+**Demo:** [docs/DEMO.md](docs/DEMO.md) walks through six scenarios (normal flow,
+a service down, a slow service, and three saga cases). The same requests are in
+[docs/demo.http](docs/demo.http) and [docs/postman/](docs/postman/); diagrams are
+in [docs/diagrams/](docs/diagrams/).
 
 Passwords: without a `.env` file, Compose uses the defaults from `.env.example`.
 To change them, `cp .env.example .env` and edit `.env`.
@@ -56,14 +63,17 @@ removes `/api` and forwards the request to the service that owns the resource:
 | `/health`            | the gateway itself, no key needed |
 
 `/api/books/{id}/checkout` and `/return` give 404: only the Loan Service may
-call them, so clients borrow through `POST /api/loans`. If a service cannot be
+call them, so clients borrow through `POST /api/loans`. The same goes for
+`/api/loans/active` and `/api/loans/anonymize`, which only the Member Service's
+deletion saga uses. If a service cannot be
 reached, the gateway answers 503.
 
 ### Member overview (API Composition)
 
 `GET /api/members/{id}/overview` is answered by the gateway itself. It asks the
 Member Service for the member and the Loan Service for their loans (both at the
-same time), then the Book Service for each borrowed book, and joins the answers:
+same time), then the Book Service for all borrowed books in one call
+(`GET /books?ids=1&ids=3`), and joins the answers:
 
 ```json
 {
@@ -72,15 +82,16 @@ same time), then the Book Service for each borrowed book, and joins the answers:
     { "id": 4, "bookId": 1, "book": { "id": 1, "title": "The Pragmatic Programmer", "author": "...", "isbn": "..." },
       "loanedAt": "...", "dueDate": "...", "returnedAt": null }
   ],
-  "warnings": []
+  "warnings": [],
+  "degraded": []
 }
 ```
 
 | Service down   | Result |
 |----------------|--------|
 | Member Service | 503: without the member there is nothing to show |
-| Loan Service   | 200 with `"loans": null` and a warning |
-| Book Service   | 200 with `"book": null` on each loan and a warning |
+| Loan Service   | 200 with `"loans": null`, a warning and `"degraded": ["loan-service"]` |
+| Book Service   | 200 with `"book": null` on each loan, a warning and `"degraded": ["book-service"]` |
 
 404 means the member does not exist.
 
@@ -88,27 +99,77 @@ same time), then the Book Service for each borrowed book, and joins the answers:
 curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/1/overview
 ```
 
-### Timeouts and circuit breaker
+### Timeouts, retries and circuit breaker
 
-Every call from the gateway to a service goes through Polly
-(`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Program.cs`):
+The gateway gives every request an `X-Correlation-Id` header (or keeps the one
+the client sent), passes it to the service and returns it in the response.
 
-- **Timeout**: a call that takes longer than 12 seconds fails.
-- **Circuit breaker**, one per service: when at least half of the calls in
-  the last 30 seconds got no answer (and there were at least 3), the circuit
-  *opens*. For 15 seconds the gateway answers 503 straight away without calling
-  that service. Then it is *half-open*: one trial call goes through. If that call
-  works, the circuit *closes* again. If it fails, it opens for another 15 seconds.
+Every call from the gateway to a service goes through a Polly pipeline
+(`Microsoft.Extensions.Http.Resilience`, see `services/ApiGateway/Resilience.cs`).
+Each service has its own pipeline, so a broken Book Service does not affect calls
+to the other two. From outside to inside:
 
-Only "no answer" (no connection or the timeout) counts as a failure, not a 5xx
-response. Because each service has its own circuit, a broken Book Service does
-not affect calls to the other two.
+1. **Retry**: a failed `GET` is tried at most 2 more times, after about 0.2 s and
+   0.4 s (exponential backoff with jitter). `POST`, `PUT` and `DELETE` are never
+   retried: a `POST /loans` that timed out may still have worked, and trying it
+   again could borrow the same book twice.
+2. **Circuit breaker**: when at least half of the calls in the last 10 seconds
+   failed (and there were at least 4), the circuit *opens*. For 15 seconds the
+   gateway answers 503 straight away without calling that service. After that
+   the next call is a trial (*half-open*). If it works the circuit *closes*
+   again, if it fails it opens for another 15 seconds.
+3. **Timeout per attempt**: 2 seconds, 12 for the Loan Service (its `POST /loans`
+   can wait up to 5 seconds on each of two other services).
 
-To see it: `docker compose stop book-service`, then call
-`/api/members/1/overview` and `/api/books/1` a few times. The 503 comes back in a
-few milliseconds and says the gateway stopped calling the service. Start the
-service again with `docker compose start book-service`, wait 15 seconds, and
-`/api/books/1` works again.
+A failure is: no connection, the timeout, or a 500/502/504 answer. A 503 does not
+count: the Loan Service answers 503 when the Book Service is down, and that should
+not open the circuit of the healthy Loan Service. 4xx answers never count.
+
+Every state change is logged with the service name (`docker compose logs -f api-gateway`),
+and so is every retry and timeout. A 503 from the gateway tells you which service
+it is about and what its circuit is doing:
+
+```json
+{ "status": 503, "detail": "...", "error": "book-service unavailable", "circuit": "Open" }
+```
+
+**Configuration** (Externalized Configuration): the breaker values come from the
+`CIRCUIT_*` variables in `.env` (see `.env.example`). Inside the gateway they are
+`Resilience__FailureRatio`, `Resilience__MinimumThroughput`,
+`Resilience__SamplingDurationSeconds`, `Resilience__BreakDurationSeconds`,
+`Resilience__TimeoutSeconds` and `Resilience__RetryAttempts`. Put the service
+name in between to change one service only, e.g. `Resilience__BookService__TimeoutSeconds=5`.
+
+**Diagnostics** (demo only, `Gateway__EnableDiagnostics=true`, on in
+`docker-compose.yml`, off in production):
+
+```bash
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/diagnostics/circuits
+# {"book-service":"Open","loan-service":"Closed","member-service":"Closed"}
+```
+
+Polly only goes from Open to HalfOpen when a call comes in after the 15 seconds,
+so the state stays `Open` until someone calls that service again.
+
+**See it happen**: `docker compose stop book-service`, then call
+`/api/members/1/overview` or `/api/books/1` a few times. The first calls take a
+moment (retries), then the circuit opens and the 503 comes back in a few
+milliseconds. `docker compose start book-service`, wait 15 seconds, call it again:
+the logs show Open → HalfOpen → Closed.
+
+**Fault injection** (demo only): the Book Service can be made slow or broken
+without stopping it. Set the values in `.env` (or in the shell) and recreate only
+that container:
+
+```bash
+BOOK_FAULT_DELAY_MS=3000 docker compose up -d book-service      # every call takes 3 s -> timeouts
+BOOK_FAULT_FAILURE_RATE=0.7 docker compose up -d book-service   # 70% of calls get a 500
+docker compose up -d book-service                               # back to normal
+```
+
+(In PowerShell: `$env:BOOK_FAULT_DELAY_MS=3000; docker compose up -d book-service`,
+and `Remove-Item Env:BOOK_FAULT_DELAY_MS` to turn it off again.)
+`/health` is never affected, so Docker keeps seeing the service as healthy.
 
 ### Health checks
 
@@ -144,6 +205,7 @@ Then open http://localhost:5001/swagger (books), http://localhost:5002/swagger
 | Method | Path          | Success | Errors   |
 |--------|---------------|---------|----------|
 | GET    | /books        | 200     |          |
+| GET    | /books?ids=1&ids=3 | 200 |        |
 | GET    | /books/{id}   | 200     | 404      |
 | POST   | /books        | 201     | 400, 409 |
 | PUT    | /books/{id}   | 200     | 400, 404, 409 |
@@ -151,6 +213,9 @@ Then open http://localhost:5001/swagger (books), http://localhost:5002/swagger
 | POST   | /books/{id}/checkout | 200 | 404, 409 |
 | POST   | /books/{id}/return   | 200 | 404, 409 |
 | GET    | /health       | 200     | 503      |
+
+`/books?ids=...` returns only those books (unknown ids are left out); the
+gateway's member overview uses it to get every title in one call.
 
 `checkout` lowers `availableCopies` by 1 and `return` raises it by 1; they are
 called by the Loan Service and not reachable through the gateway. 409 means no copy is available (checkout) or all
@@ -181,11 +246,51 @@ curl -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/books/6
 | GET    | /members/{id} | 200     | 404           |
 | POST   | /members      | 201     | 400, 409      |
 | PUT    | /members/{id} | 200     | 400, 404, 409 |
+| DELETE | /members/{id} | 202     | 404, 409      |
+| GET    | /members/{id}/deletion | 200 | 404     |
 | GET    | /health       | 200     | 503           |
 
 409 means another member already has that card number. Card numbers are
 stored without spaces and in capitals, so `lib 0004` becomes `LIB0004`.
-Member 3 (Carla Bakker) is seeded as blocked, for the Loan Service later.
+Member 3 (Carla Bakker) is seeded as blocked, so the Loan Service refuses her.
+
+Every member has a `status`: `Active`, `PendingDeletion` (a deletion is
+running) or `Deleted`. Only `Active` members can borrow books or be changed
+with `PUT` (409 otherwise).
+
+### Deleting a member (Saga)
+
+`DELETE /members/{id}` starts a **saga**, answers `202 Accepted` at once, and
+points with `Location` to `GET /members/{id}/deletion`, which shows the saga's
+`state`, `currentStep`, `failureReason` and `retryCount`. The member is not
+removed but anonymized: name and card number are cleared, status `Deleted`. Their
+loans stay in the Loan Service without the member id.
+
+The deletion changes two databases (member_db and loan_db), and there is no
+transaction across two databases. So the Member Service orchestrates it as four
+local steps and saves the saga state (table `DeletionSagas` in member_db) after each:
+
+| # | Step | Service | Type | When it fails |
+|---|------|---------|------|---------------|
+| 1 | Status → `PendingDeletion` | Member | compensatable | – (part of the DELETE request) |
+| 2 | Are there active loans? (`GET /loans/active`) | Loan | pivot | Active loans: undo step 1 (status back to `Active`), saga `Failed` |
+| 3 | Anonymize loan history (`POST /loans/anonymize`) | Loan | retryable | Retry until it works |
+| 4 | Anonymize member, status `Deleted` | Member | retryable | Retry until it works |
+
+A background worker (`DeletionSagaWorker.cs`) runs the steps and retries a step
+when the Loan Service is unreachable (2, 4, 8, 16, then every 30 seconds). Before
+the pivot it gives up after `Saga__MaxAttemptsBeforePivot` (default 10) attempts
+and compensates; after the pivot it never gives up. Step 1 also works as a lock:
+the Loan Service refuses new loans while the member is `PendingDeletion`.
+
+Every saga step is logged with the saga id, and the calls to the Loan Service
+carry it in `X-Correlation-Id`, so one deletion can be followed through both
+services: `docker compose logs -f member-service loan-service`.
+
+```bash
+curl -i -X DELETE -H "X-Api-Key: dev-api-key" localhost:5000/api/members/2
+curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members/2/deletion
+```
 
 ```bash
 curl -H "X-Api-Key: dev-api-key" localhost:5000/api/members
@@ -209,7 +314,7 @@ curl -X PUT localhost:5000/api/members/2 \
 `POST /loans` takes `{"memberId": 1, "bookId": 2}` and does three steps:
 
 1. Ask the Member Service for the member: 400 if it does not exist, 409 if
-   the member is blocked.
+   the member is blocked or not `Active` (being deleted, or deleted).
 2. Ask the Book Service to check out one copy: 400 if the book does not
    exist, 409 if no copy is available.
 3. Save the loan, due in 14 days. If saving fails, the copy is given back.
@@ -221,6 +326,12 @@ not titles or names: those belong to the other services.
 
 The addresses of the other services come from `Services__MemberService` and
 `Services__BookService` (see `docker-compose.yml`).
+
+Two endpoints are only for the deletion saga in the Member Service and are not
+reachable through the gateway: `GET /loans/active?memberId=1` (loans not returned
+yet) and `POST /loans/anonymize` with `{"memberId": 1}` (sets `memberId` to
+`null` on all their loans). The anonymize call is idempotent: a second call
+changes nothing and still answers 200, so the saga can safely retry it.
 
 ```bash
 curl -X POST localhost:5000/api/loans \

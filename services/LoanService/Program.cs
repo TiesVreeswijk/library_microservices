@@ -38,12 +38,13 @@ builder.Services.AddHealthChecks().AddDbContextCheck<LoanDbContext>("database");
 
 var app = builder.Build();
 
-// Create/update the database schema on startup. There is no seed data: a seeded loan
-// would also have to lower AvailableCopies in book_db, and this service cannot touch that.
+// Create/update the database schema and insert demo loans on startup (see SeedData.cs for how
+// they stay in step with the Book Service's copy counts).
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<LoanDbContext>();
     db.Database.Migrate();
+    SeedData.Seed(db);
 }
 
 // API description at /openapi/v1.json, browsable at /swagger.
@@ -100,6 +101,10 @@ loans.MapPost("/", async Task<Results<Created<Loan>, ValidationProblem, Conflict
         return TypedResults.ValidationProblem(new Dictionary<string, string[]> { ["memberId"] = [$"Member {memberId} does not exist."] });
     if (member.IsBlocked)
         return TypedResults.Conflict(new ErrorResponse($"Member {memberId} is blocked and cannot borrow books."));
+    // PendingDeletion: a deletion saga is running for this member (see the Member Service).
+    // Refusing loans now is what makes the saga's "no active loans" check stay true until the end.
+    if (member.Status != "Active")
+        return TypedResults.Conflict(new ErrorResponse($"Member {memberId} is {member.Status} and cannot borrow books."));
 
     // Step 2
     CheckoutResult checkout;
@@ -164,6 +169,37 @@ loans.MapPost("/{id:int}/return", async Task<Results<Ok<Loan>, NotFound, Conflic
     return TypedResults.Ok(loan);
 });
 
+// The two endpoints below are used by the "delete member" saga in the Member Service.
+// They are internal: the gateway does not expose them.
+
+// Step 2 of the saga: the loans of this member that are not returned yet.
+loans.MapGet("/active", async (int memberId, HttpRequest http, LoanDbContext db, ILogger<Program> logger) =>
+{
+    var active = await db.Loans
+        .Where(l => l.MemberId == memberId && l.ReturnedAt == null)
+        .OrderBy(l => l.Id)
+        .ToListAsync();
+
+    logger.LogInformation("Correlation {CorrelationId}: member {MemberId} has {Count} active loans",
+        http.Headers["X-Correlation-Id"].ToString(), memberId, active.Count);
+    return active;
+});
+
+// Step 3 of the saga: remove the member id from all their loans.
+// Idempotent: the second call finds no loans with this member id any more, changes nothing and
+// still answers 200. That matters, because the saga retries this call when it gets no answer,
+// even if the first call did work.
+loans.MapPost("/anonymize", async (AnonymizeRequest request, HttpRequest http, LoanDbContext db, ILogger<Program> logger) =>
+{
+    var anonymized = await db.Loans
+        .Where(l => l.MemberId == request.MemberId)
+        .ExecuteUpdateAsync(s => s.SetProperty(l => l.MemberId, (int?)null));
+
+    logger.LogInformation("Correlation {CorrelationId}: anonymized {Count} loans of member {MemberId}",
+        http.Headers["X-Correlation-Id"].ToString(), anonymized, request.MemberId);
+    return new { request.MemberId, Anonymized = anonymized };
+});
+
 app.Run();
 
 // No connection, an error status (5xx) or the 5 second timeout.
@@ -174,3 +210,6 @@ static ProblemHttpResult ServiceUnavailable(string service) =>
 
 // Body of a 409 response: {"error": "..."}
 record ErrorResponse(string Error);
+
+// Body of POST /loans/anonymize: {"memberId": 2}
+record AnonymizeRequest(int MemberId);

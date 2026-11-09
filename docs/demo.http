@@ -1,0 +1,215 @@
+# Every request of docs/DEMO.md, in order. Run them one by one with the green arrow (Rider)
+# or 'Send Request' (VS Code REST Client). Start from fresh data: docker compose down -v; docker compose up -d --build
+# Lines starting with '# >' are commands for the terminal, not requests.
+#
+# The gateway has no login: every /api request sends the API key in X-Api-Key.
+
+@baseUrl = http://localhost:5000
+@apiKey = dev-api-key
+
+
+# ============================================================================
+# Scenario 1. Normal flow
+# API Gateway (routing + API key), API Composition, Database per Service.
+# ============================================================================
+
+### Health (no key needed)
+# Healthy. /health is open so Docker can call it.
+GET {{baseUrl}}/health
+
+### Books without API key -> 401
+# The gateway stops it before any service sees it.
+GET {{baseUrl}}/api/books
+
+### Books with API key
+# 7 books, forwarded to the Book Service as GET /books.
+GET {{baseUrl}}/api/books
+X-Api-Key: {{apiKey}}
+
+### Loans of Anna (only ids)
+# The Loan Service only knows bookId, not titles.
+GET {{baseUrl}}/api/loans?memberId=1
+X-Api-Key: {{apiKey}}
+
+### Overview of Anna
+# Member + 3 loans + titles from three services, "degraded": [].
+GET {{baseUrl}}/api/members/1/overview
+X-Api-Key: {{apiKey}}
+
+
+# ============================================================================
+# Scenario 2. Book Service down
+# Circuit Breaker, API Composition fallback, Health Check API.
+# ============================================================================
+
+### Circuits (all Closed)
+GET {{baseUrl}}/api/diagnostics/circuits
+X-Api-Key: {{apiKey}}
+
+# > docker compose stop book-service
+
+### Overview, Book Service down (send 3x)
+# 1st: a few seconds (timeouts + retries), the circuit opens in the 1st or 2nd, then milliseconds. "book": null, "degraded": ["book-service"].
+GET {{baseUrl}}/api/members/1/overview
+X-Api-Key: {{apiKey}}
+
+### Book 1 -> 503, circuit Open
+# 503 at once: "error": "book-service unavailable", "circuit": "Open".
+GET {{baseUrl}}/api/books/1
+X-Api-Key: {{apiKey}}
+
+### Circuits (book-service Open)
+GET {{baseUrl}}/api/diagnostics/circuits
+X-Api-Key: {{apiKey}}
+
+# > docker compose start book-service   (wait until healthy and 15 s have passed)
+
+### Book 1 -> 200 (trial call closes the circuit)
+# Logs: Open -> HALF-OPEN -> CLOSED.
+GET {{baseUrl}}/api/books/1
+X-Api-Key: {{apiKey}}
+
+### Circuits (all Closed again)
+GET {{baseUrl}}/api/diagnostics/circuits
+X-Api-Key: {{apiKey}}
+
+
+# ============================================================================
+# Scenario 3. Book Service slow or flaky
+# Circuit Breaker, timeout + retry (Polly), Externalized Configuration.
+# ============================================================================
+
+# > bash: BOOK_FAULT_DELAY_MS=3000 docker compose up -d book-service
+
+# > PowerShell: $env:BOOK_FAULT_DELAY_MS=3000; docker compose up -d book-service
+
+### Slow book (send 3x)
+# 1st: 503 after ~6 s (3 timeouts), 2nd: circuit opens, 3rd: 503 in milliseconds.
+GET {{baseUrl}}/api/books/1
+X-Api-Key: {{apiKey}}
+
+### Circuits (book-service Open)
+GET {{baseUrl}}/api/diagnostics/circuits
+X-Api-Key: {{apiKey}}
+
+# > bash: BOOK_FAULT_FAILURE_RATE=0.3 docker compose up -d book-service
+
+# > PowerShell: Remove-Item Env:BOOK_FAULT_DELAY_MS; $env:BOOK_FAULT_FAILURE_RATE=0.3; docker compose up -d book-service
+
+# > wait 15 s for the circuit
+
+### Flaky book (send a few times)
+# First 200s (logs: 'attempt 1 failed (HTTP 500), retrying'), then the low-threshold circuit opens anyway.
+GET {{baseUrl}}/api/books/1
+X-Api-Key: {{apiKey}}
+
+# > bash: docker compose up -d book-service
+
+# > PowerShell: Remove-Item Env:BOOK_FAULT_FAILURE_RATE; docker compose up -d book-service
+
+
+# ============================================================================
+# Scenario 4. Delete a member who still has books
+# Saga: pivot says no, step 1 is compensated.
+# ============================================================================
+
+### Overview of Anna (2 books out)
+GET {{baseUrl}}/api/members/1/overview
+X-Api-Key: {{apiKey}}
+
+### Delete Anna -> 202
+# 202 Accepted, Location: /api/members/1/deletion, state Running.
+DELETE {{baseUrl}}/api/members/1
+X-Api-Key: {{apiKey}}
+
+### Saga status -> Failed
+# "state": "Failed", "failureReason": "The member still has 2 book(s) on loan."
+GET {{baseUrl}}/api/members/1/deletion
+X-Api-Key: {{apiKey}}
+
+### Anna is Active again
+GET {{baseUrl}}/api/members/1
+X-Api-Key: {{apiKey}}
+
+
+# ============================================================================
+# Scenario 5. Delete a member without active loans
+# Saga happy path, anonymized loan history.
+# ============================================================================
+
+### Loans of Bram (all returned)
+GET {{baseUrl}}/api/loans?memberId=2
+X-Api-Key: {{apiKey}}
+
+### Delete Bram -> 202
+DELETE {{baseUrl}}/api/members/2
+X-Api-Key: {{apiKey}}
+
+### Saga status -> Completed
+GET {{baseUrl}}/api/members/2/deletion
+X-Api-Key: {{apiKey}}
+
+### Bram is anonymized
+# "name": "", "cardNumber": null, "status": "Deleted".
+GET {{baseUrl}}/api/members/2
+X-Api-Key: {{apiKey}}
+
+### No loans point to Bram any more
+# []
+GET {{baseUrl}}/api/loans?memberId=2
+X-Api-Key: {{apiKey}}
+
+### All loans (Bram's have memberId null)
+GET {{baseUrl}}/api/loans
+X-Api-Key: {{apiKey}}
+
+### Borrow as deleted member -> 409
+POST {{baseUrl}}/api/loans
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{"memberId": 2, "bookId": 3}
+
+### Delete Bram again -> 409
+DELETE {{baseUrl}}/api/members/2
+X-Api-Key: {{apiKey}}
+
+
+# ============================================================================
+# Scenario 6. Delete a member while the Loan Service is down
+# Saga: saved state, retries, eventual consistency.
+# ============================================================================
+
+# > docker compose stop loan-service
+
+### Delete Daan -> 202
+# Step 1 only needs member_db, so this still works.
+DELETE {{baseUrl}}/api/members/4
+X-Api-Key: {{apiKey}}
+
+### Saga status -> Running, waiting (send a few times)
+# currentStep CheckActiveLoans, retryCount going up, failureReason 'Waiting for the Loan Service'.
+GET {{baseUrl}}/api/members/4/deletion
+X-Api-Key: {{apiKey}}
+
+### Daan is PendingDeletion
+GET {{baseUrl}}/api/members/4
+X-Api-Key: {{apiKey}}
+
+# > docker compose start loan-service
+
+### Borrow while PendingDeletion -> 409 (be quick)
+# Only before the worker's next retry.
+POST {{baseUrl}}/api/loans
+X-Api-Key: {{apiKey}}
+Content-Type: application/json
+
+{"memberId": 4, "bookId": 3}
+
+### Saga status -> Completed (within ~30 s)
+GET {{baseUrl}}/api/members/4/deletion
+X-Api-Key: {{apiKey}}
+
+### Daan is Deleted
+GET {{baseUrl}}/api/members/4
+X-Api-Key: {{apiKey}}

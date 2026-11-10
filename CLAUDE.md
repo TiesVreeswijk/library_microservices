@@ -23,6 +23,7 @@ HTTP with its state in member_db, so it does not need a broker.
 - `docs/02-sprint-planning.md` — sprint-by-sprint plan, extra-hours options, risks
 - `docs/DEMO.md` — the demo script (six scenarios), with `docs/demo.http`,
   `docs/postman/` and `docs/diagrams/` (Mermaid: saga sequence, circuit breaker states)
+- `docs/04-what-i-learned.md` — reflection on the hard parts (saga, failure handling, data ownership)
 
 Note: those documents name TypeScript + Node as the stack, written before the
 switch to C#. The actual implementation is C#/.NET 10. The pattern choices still
